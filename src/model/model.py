@@ -1,0 +1,90 @@
+import torch
+from monai.networks.blocks import ADN
+from monai.networks.nets import FullyConnectedNet
+from pytorch_lightning import LightningModule
+from torch import nn, optim
+import torch.nn.functional as F
+
+
+class MVAutoencoder(LightningModule):
+
+    def __init__(self, in_channels_list: list, out_channels: int, hidden_channels_list: list, dropout=None,
+                 act='PRELU', bias=True, adn_ordering="NA"):
+        super().__init__()
+        self.views = len(in_channels_list)
+        # Saving hyperparameters of autoencoder
+        self.save_hyperparameters()
+        # Creating encoder and decoder
+        for idx, in_channels, hidden_channels in zip(range(len(in_channels_list)), in_channels_list,
+                                                     hidden_channels_list):
+            setattr(self, f"encoder_{idx}",
+                    MLP(in_channels=in_channels, out_channels=out_channels,
+                        hidden_channels=hidden_channels, dropout=dropout,
+                        act=act, bias=bias, adn_ordering=adn_ordering))
+            setattr(self, f"decoder_{idx}",
+                    MLP(in_channels=out_channels * len(in_channels_list), out_channels=in_channels,
+                        hidden_channels=list(reversed(hidden_channels)), dropout=dropout,
+                        act=act, bias=bias, adn_ordering=adn_ordering))
+
+
+    def forward(self, x):
+        z = self.encode(x)
+        x_hat = self.decode(z)
+        return x_hat
+
+
+    def encode(self, x):
+        z = []
+        for idx, x_data in enumerate(x):
+            encoder = getattr(self, f"encoder_{idx}")
+            z.append(encoder(x_data))
+        z = torch.cat(z, dim= 1)
+        return z
+
+
+    def decode(self, z):
+        x_hat = []
+        for idx in range(self.views):
+            decoder = getattr(self, f"decoder_{idx}")
+            x_hat.append(decoder(z))
+        return x_hat
+
+
+    def _get_reconstruction_loss(self, batch):
+        x = batch  # We do not need the labels
+        x_hat = self.forward(x)
+        loss = F.mse_loss(torch.cat(x, dim= 1), torch.cat(x_hat, dim= 1))
+        return loss
+
+
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.parameters())
+        return optimizer
+
+
+    def training_step(self, batch, batch_idx):
+        loss = self._get_reconstruction_loss(batch)
+        self.log("train_loss", loss)
+        return loss
+
+
+    def validation_step(self, batch, batch_idx):
+        loss = self._get_reconstruction_loss(batch)
+        self.log("val_loss", loss)
+
+
+    def test_step(self, batch, batch_idx):
+        loss = self._get_reconstruction_loss(batch)
+        self.log("test_loss", loss)
+
+
+class MLP(FullyConnectedNet):
+
+    def _get_layer(self, in_channels: int, out_channels: int, bias: bool) -> nn.Sequential:
+        seq = nn.Sequential(
+            nn.Linear(in_channels, out_channels, bias),
+            ADN(act= self.act, norm= ("Batch", {"num_features": out_channels}), dropout= self.dropout,
+                dropout_dim=1, ordering= self.adn_ordering)
+        )
+        return seq
+
