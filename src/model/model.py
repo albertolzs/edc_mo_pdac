@@ -8,10 +8,11 @@ import torch.nn.functional as F
 
 class MVAutoencoder(LightningModule):
 
-    def __init__(self, in_channels_list: list, out_channels: int, hidden_channels_list: list, dropout=None,
-                 act='PRELU', bias=True, adn_ordering="NA"):
+    def __init__(self, in_channels_list: list, out_channels: int, hidden_channels_list: list, lr: float = 1e-3,
+                 dropout=None, act='PRELU', bias=True, adn_ordering="NA"):
         super().__init__()
         self.views = len(in_channels_list)
+        self.lr = lr
         # Saving hyperparameters of autoencoder
         self.save_hyperparameters()
         # Creating encoder and decoder
@@ -27,17 +28,17 @@ class MVAutoencoder(LightningModule):
                         act=act, bias=bias, adn_ordering=adn_ordering))
 
 
-    def forward(self, x):
-        z = self.encode(x)
+    def forward(self, Xs):
+        z = self.encode(Xs)
         x_hat = self.decode(z)
         return x_hat
 
 
-    def encode(self, x):
+    def encode(self, Xs):
         z = []
-        for idx, x_data in enumerate(x):
-            encoder = getattr(self, f"encoder_{idx}")
-            z.append(encoder(x_data))
+        for X_idx, X in enumerate(Xs):
+            encoder = getattr(self, f"encoder_{X_idx}")
+            z.append(encoder(X))
         z = torch.cat(z, dim= 1)
         return z
 
@@ -51,31 +52,37 @@ class MVAutoencoder(LightningModule):
 
 
     def _get_reconstruction_loss(self, batch):
-        x = batch  # We do not need the labels
-        x_hat = self.forward(x)
-        loss = F.mse_loss(torch.cat(x, dim= 1), torch.cat(x_hat, dim= 1))
-        return loss
+        x_hat = self.forward(batch)
+        individual_loss = [F.mse_loss(target, X) for target,X in zip(batch, x_hat)]
+        loss = F.mse_loss(torch.cat(batch, dim= 1), torch.cat(x_hat, dim= 1))
+        return loss, individual_loss
 
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters())
+        optimizer = optim.Adam(self.parameters(), lr= self.lr)
         return optimizer
 
 
     def training_step(self, batch, batch_idx):
-        loss = self._get_reconstruction_loss(batch)
-        self.log("train_loss", loss)
+        loss, individual_loss = self._get_reconstruction_loss(batch)
+        loss_dict = {f"train_loss_{idx}": view_loss for idx,view_loss in enumerate(individual_loss)}
+        loss_dict["train_loss"] = loss
+        self.log_dict(loss_dict)
         return loss
 
 
     def validation_step(self, batch, batch_idx):
-        loss = self._get_reconstruction_loss(batch)
-        self.log("val_loss", loss)
+        loss, individual_loss = self._get_reconstruction_loss(batch)
+        loss_dict = {f"val_loss_{idx}": view_loss for idx,view_loss in enumerate(individual_loss)}
+        loss_dict["val_loss"] = loss
+        self.log_dict(loss_dict)
 
 
     def test_step(self, batch, batch_idx):
-        loss = self._get_reconstruction_loss(batch)
-        self.log("test_loss", loss)
+        loss, individual_loss = self._get_reconstruction_loss(batch)
+        loss_dict = {f"test_loss_{idx}": view_loss for idx,view_loss in enumerate(individual_loss)}
+        loss_dict["test_loss"] = loss
+        self.log_dict(loss_dict)
 
 
 class MLP(FullyConnectedNet):
