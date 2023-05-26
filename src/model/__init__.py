@@ -1,1 +1,1 @@
-from .model import MVAutoencoder
+from .mvautoencoder import MVAutoencoder

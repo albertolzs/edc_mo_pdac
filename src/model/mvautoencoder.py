@@ -1,42 +1,41 @@
 import torch
 from monai.networks.blocks import ADN
 from monai.networks.nets import FullyConnectedNet
-from pytorch_lightning import LightningModule
+import pytorch_lightning as pl
 from torch import nn, optim
 import torch.nn.functional as F
 
 
-class MVAutoencoder(LightningModule):
+class MVAutoencoder(pl.LightningModule):
 
     def __init__(self, in_channels_list: list, out_channels: int, hidden_channels_list: list, lr: float = 1e-3,
                  dropout=None, act='PRELU', bias=True, adn_ordering="NA"):
         super().__init__()
         self.views = len(in_channels_list)
-        self.lr = lr
         # Saving hyperparameters of autoencoder
         self.save_hyperparameters()
         # Creating encoder and decoder
         for idx, in_channels, hidden_channels in zip(range(len(in_channels_list)), in_channels_list,
                                                      hidden_channels_list):
             setattr(self, f"encoder_{idx}",
-                    MLP(in_channels=in_channels, out_channels=out_channels,
+                    FCN(in_channels=in_channels, out_channels=out_channels,
                         hidden_channels=hidden_channels, dropout=dropout,
                         act=act, bias=bias, adn_ordering=adn_ordering))
             setattr(self, f"decoder_{idx}",
-                    MLP(in_channels=out_channels * len(in_channels_list), out_channels=in_channels,
+                    FCN(in_channels=out_channels * len(in_channels_list), out_channels=in_channels,
                         hidden_channels=list(reversed(hidden_channels)), dropout=dropout,
                         act=act, bias=bias, adn_ordering=adn_ordering))
 
 
-    def forward(self, Xs):
-        z = self.encode(Xs)
+    def forward(self, batch):
+        z = self.encode(batch)
         x_hat = self.decode(z)
         return x_hat
 
 
-    def encode(self, Xs):
+    def encode(self, batch):
         z = []
-        for X_idx, X in enumerate(Xs):
+        for X_idx, X in enumerate(batch):
             encoder = getattr(self, f"encoder_{X_idx}")
             z.append(encoder(X))
         z = torch.cat(z, dim= 1)
@@ -59,7 +58,7 @@ class MVAutoencoder(LightningModule):
 
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr= self.lr)
+        optimizer = optim.Adam(self.parameters(), lr= self.hparams.lr)
         return optimizer
 
 
@@ -85,7 +84,7 @@ class MVAutoencoder(LightningModule):
         self.log_dict(loss_dict)
 
 
-class MLP(FullyConnectedNet):
+class FCN(FullyConnectedNet):
 
     def _get_layer(self, in_channels: int, out_channels: int, bias: bool) -> nn.Sequential:
         seq = nn.Sequential(

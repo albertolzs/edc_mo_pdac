@@ -1,10 +1,9 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.decomposition import NMF
 
 
-class RemovePatientsWithZeros(BaseEstimator, TransformerMixin):
+class RemoveFeaturesWithZeros(BaseEstimator, TransformerMixin):
 
     def __init__(self, threshold: float = 0.2, verbose: bool = False):
         self.threshold = threshold
@@ -21,7 +20,7 @@ class RemovePatientsWithZeros(BaseEstimator, TransformerMixin):
         return transformed_X
 
 
-class RemovePatientsWithNaN(BaseEstimator, TransformerMixin):
+class RemoveFeaturesWithNaN(BaseEstimator, TransformerMixin):
 
     def __init__(self, threshold: float = 0.2, verbose: bool = False):
         self.threshold = threshold

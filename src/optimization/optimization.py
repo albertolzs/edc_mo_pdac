@@ -1,228 +1,229 @@
+import copy
 import numpy as np
-from joblib import Parallel, delayed
+import optuna
+import pandas as pd
+import torch
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.tuner import Tuner
 from pytorch_lightning.utilities.seed import isolate_rng
+from sklearn.metrics import silhouette_score
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
-from src import settings
 from src.model import MVAutoencoder
+from src.model.deepclustering import DeepClustering
 from src.utils import MultiViewDataset
 
 
 class Optimization:
 
-    # @staticmethod
-    # def objective(trial, rnaseq_provtrain, methylation_provtrain, rnaseq_test, methylation_test,
-    #               rnaseq_pipeline, methylation_pipeline, n_jobs: int = None):
-    #
-    #     n_components_rnaseq = rnaseq_pipeline.get_params()["featureselectionnmf__nmf__n_components"]
-    #     n_components_methylation = methylation_pipeline.get_params()["featureselectionnmf__nmf__n_components"]
-    #
-    #     num_features_rnaseq = trial.suggest_int("num_features_rnaseq", n_components_rnaseq, n_components_rnaseq * 10,
-    #                                             step=n_components_rnaseq)
-    #     num_features_methylation = trial.suggest_int("num_features_methylation", n_components_methylation,
-    #                                                  n_components_methylation * 20, step=n_components_methylation)
-    #     num_layers = trial.suggest_int("num_layers", 1, 2)
-    #     num_units = [trial.suggest_int(f"num_units_{i}", 3, 12, step=3) for i in range(num_layers)]
-    #     BATCH_SIZE = 64
-    #     trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
-    #     rnaseq_pipeline = rnaseq_pipeline.set_params(
-    #         **{"featureselectionnmf__n_largest": num_features_rnaseq // n_components_methylation})
-    #     methylation_pipeline = methylation_pipeline.set_params(
-    #         **{"featureselectionnmf__n_largest": num_features_methylation // n_components_methylation})
-    #
-    #     results = Parallel(n_jobs=n_jobs)((Optimization._one_trial)(train_index=train_index, val_index=val_index,
-    #                                                                 trial=trial, rnaseq_provtrain=rnaseq_provtrain,
-    #                                                                 methylation_provtrain=methylation_provtrain,
-    #                                                                 rnaseq_test=rnaseq_test,
-    #                                                                 methylation_test=methylation_test,
-    #                                                                 rnaseq_pipeline=rnaseq_pipeline,
-    #                                                                 methylation_pipeline=methylation_pipeline,
-    #                                                                 batch_size=BATCH_SIZE) \
-    #                                       for train_index, val_index in KFold(n_splits=5, shuffle=True,
-    #                                                                           random_state=settings.RANDOM_STATE).split(rnaseq_provtrain.index))
-    #
-    #     trial.set_user_attr("train_loss_list", train_loss_list)
-    #     trial.set_user_attr("train_loss_0_list", train_loss_0_list)
-    #     trial.set_user_attr("train_loss_1_list", train_loss_1_list)
-    #     trial.set_user_attr("val_loss_list", val_loss_list)
-    #     trial.set_user_attr("val_loss_0_list", val_loss_0_list)
-    #     trial.set_user_attr("val_loss_1_list", val_loss_1_list)
-    #     trial.set_user_attr("test_loss_list", test_loss_list)
-    #     trial.set_user_attr("test_loss_0_list", test_loss_0_list)
-    #     trial.set_user_attr("test_loss_1_list", test_loss_1_list)
-    #     trial.set_user_attr("n_epochs_list", n_epochs_list)
-    #     trial.set_user_attr("lr_list", lr_list)
-    #
-    #     return np.mean(val_loss_list)
-
-
     @staticmethod
-    def objective(trial, rnaseq_provtrain, methylation_provtrain, rnaseq_test, methylation_test,
-                  rnaseq_pipeline, methylation_pipeline, n_jobs: int = None):
+    def objective(trial, Xs, samples, pipelines, max_features: int = 5000, random_state: int = None):
 
-        n_components_rnaseq = rnaseq_pipeline.get_params()["featureselectionnmf__nmf__n_components"]
-        n_components_methylation = methylation_pipeline.get_params()["featureselectionnmf__nmf__n_components"]
+        n_components_pipes = [pipeline.get_params()["featureselectionnmf__nmf__n_components"] for pipeline in pipelines]
+        num_features = [trial.suggest_int(f"num_features_{idx}", n_components_pipe,
+                                          n_components_pipe*(max_features/n_components_pipe), step=n_components_pipe)
+                        for idx,n_components_pipe in enumerate(n_components_pipes)]
 
-        num_features_rnaseq = trial.suggest_int("num_features_rnaseq", n_components_rnaseq, n_components_rnaseq*10,
-                                                step=n_components_rnaseq)
-        num_features_methylation = trial.suggest_int("num_features_methylation", n_components_methylation,
-                                                     n_components_methylation*20, step=n_components_methylation)
         num_layers = trial.suggest_int("num_layers", 1, 2)
-        num_units = [trial.suggest_int(f"num_units_{i}", 3, 12, step=3) for i in range(num_layers)]
-        train_loss_list, train_loss_0_list, train_loss_1_list = [], [], []
-        val_loss_list, val_loss_0_list, val_loss_1_list = [], [], []
-        test_loss_list, test_loss_0_list, test_loss_1_list = [], [], []
-        n_epochs_list, lr_list = [], []
+        num_units = []
+        for view_idx,units in enumerate(num_features):
+            units_in_view = [units]
+            for layer in range(num_layers):
+                units_in_layer = units_in_view[layer]
+                space = np.linspace(units_in_layer/12, units_in_layer/2, num=4, endpoint= True, retstep=True, dtype=int)
+                current_units = trial.suggest_int(f"num_units_view{view_idx}_layer{layer}", space[0][0], space[0][-1],
+                                                  step= space[1])
+                units_in_view.append(current_units)
+            num_units.append(units_in_view)
+
+        train_loss_list, train_loss_view_list = [], []
+        val_loss_list, val_loss_view_list = [], []
+        test_loss_list, test_loss_view_list = [], []
+
+        train_au_loss_list, train_au_loss_view_list, train_dist_loss_list, train_total_loss_list = [], [], [], []
+        val_au_loss_list, val_au_loss_view_list, val_dist_loss_list, val_total_loss_list = [], [], [], []
+        test_au_loss_list, test_au_loss_view_list, test_dist_loss_list, test_total_loss_list = [], [], [], []
+        n_epochs_list, n_cl_epochs_list, lr_list = [], [], []
+        train_silhscore_list, val_silhscore_list, test_silhscore_list = [], [], []
         BATCH_SIZE = 64
         trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
-        rnaseq_pipeline = rnaseq_pipeline.set_params(**{"featureselectionnmf__n_largest": num_features_rnaseq // n_components_rnaseq})
-        methylation_pipeline = methylation_pipeline.set_params(**{"featureselectionnmf__n_largest": num_features_methylation // n_components_methylation})
+        pipelines = [pipeline.set_params(**{"featureselectionnmf__n_largest": feats // comps})
+                     for pipeline,feats,comps in zip(pipelines, num_features, n_components_pipes)]
 
-        for train_index, val_index in KFold(n_splits=5, shuffle= True,
-                                            random_state=settings.RANDOM_STATE).split(rnaseq_provtrain.index):
-            rnaseq_train, rnaseq_val = rnaseq_provtrain.iloc[train_index], rnaseq_provtrain.iloc[val_index]
-            methylation_train, methylation_val = methylation_provtrain.iloc[train_index], methylation_provtrain.iloc[val_index]
+        for provtrain_index, test_index in KFold(n_splits=5, shuffle=True, random_state=random_state).split(samples):
+            train_loc, test_loc = samples[provtrain_index], samples[test_index]
+            Xs_provtrain = [X.loc[train_loc] for X in Xs]
+            Xs_provtest = [X.loc[test_loc] for X in Xs]
 
-            rnaseq_pipeline.fit(rnaseq_train)
-            transformed_rnaseq_train = rnaseq_pipeline.transform(rnaseq_train)
-            transformed_rnaseq_val = rnaseq_pipeline.transform(rnaseq_val)
-            transformed_rnaseq_test = rnaseq_pipeline.transform(rnaseq_test)
+            samples_train= pd.concat(Xs_provtrain, axis= 1).index
+            for train_index, val_index in KFold(n_splits=5, shuffle= True, random_state=random_state).split(samples_train):
+                train_loc, val_loc = samples_train[train_index], samples_train[val_index]
+                Xs_train = [X.loc[train_loc] for X in Xs_provtrain]
+                Xs_val = [X.loc[val_loc] for X in Xs_provtrain]
 
-            methylation_pipeline.fit(methylation_train)
-            transformed_methylation_train = methylation_pipeline.transform(methylation_train)
-            transformed_methylation_val = methylation_pipeline.transform(methylation_val)
-            transformed_methylation_test = methylation_pipeline.transform(methylation_test)
+                pipelines = [pipeline.fit(X) for pipeline,X in zip(pipelines, Xs_train)]
+                Xs_train = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_train)]
+                Xs_val = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_val)]
+                Xs_test = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_provtest)]
 
-            Xs_train = [transformed_rnaseq_train, transformed_methylation_train]
-            Xs_val = [transformed_rnaseq_val, transformed_methylation_val]
-            Xs_test = [transformed_rnaseq_test, transformed_methylation_test]
-            in_channels_list = [X.shape[1] for X in Xs_train]
-            hidden_channels_list = [[input_features // num_units[layer] for layer in range(num_layers)] \
-                                    for input_features in in_channels_list]
+                in_channels_list = []
+                hidden_channels_list = []
+                for units_in_view in num_units:
+                    in_channels_list.append(units_in_view[0])
+                    hidden_channels_list.append(units_in_view[1:])
 
-            training_data = MultiViewDataset(Xs=Xs_train)
-            validation_data = MultiViewDataset(Xs=Xs_val)
-            testing_data = MultiViewDataset(Xs=Xs_test)
-            train_dataloader = DataLoader(dataset=training_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
-            val_dataloader = DataLoader(dataset=validation_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
-            test_dataloader = DataLoader(dataset=testing_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+                training_data = MultiViewDataset(Xs=Xs_train)
+                validation_data = MultiViewDataset(Xs=Xs_val)
+                testing_data = MultiViewDataset(Xs=Xs_test)
+                train_dataloader = DataLoader(dataset=training_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+                val_dataloader = DataLoader(dataset=validation_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+                test_dataloader = DataLoader(dataset=testing_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
-            with isolate_rng():
-                tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False))
-                lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                                        hidden_channels_list=hidden_channels_list),
-                                          train_dataloaders=train_dataloader)
-                optimal_lr = lr_finder.suggestion()
+                with isolate_rng():
+                    tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False))
+                    lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+                                                            hidden_channels_list=hidden_channels_list),
+                                              train_dataloaders=train_dataloader)
+                    optimal_lr = lr_finder.suggestion()
 
-                trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_loss", patience=7)],
-                                     enable_checkpointing=False)
-                trainer.fit(model=MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                      hidden_channels_list= hidden_channels_list, lr= optimal_lr),
-                            train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+                    trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_loss", patience=7)],
+                                         enable_checkpointing=False)
+                    trainer.fit(model=MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+                                          hidden_channels_list= hidden_channels_list, lr= optimal_lr),
+                                train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-                trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
-                                     log_every_n_steps=np.ceil(len(training_data) / BATCH_SIZE).astype(int),
-                                     logger=TensorBoardLogger("tensorboard"))
-                model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                      hidden_channels_list= hidden_channels_list, lr= optimal_lr)
-                trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+                    trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
+                                         log_every_n_steps=np.ceil(len(training_data) / BATCH_SIZE).astype(int),
+                                         logger=TensorBoardLogger("tensorboard"))
+                    model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+                                          hidden_channels_list= hidden_channels_list, lr= optimal_lr)
+                    trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-                train_loss = trainer.validate(model=model, dataloaders= train_dataloader)
-                val_loss = trainer.validate(model=model, dataloaders= val_dataloader)
-                test_loss = trainer.validate(model=model, dataloaders= test_dataloader)
+                    train_loss = trainer.validate(model=model, dataloaders= train_dataloader)
+                    val_loss = trainer.validate(model=model, dataloaders= val_dataloader)
+                    test_loss = trainer.validate(model=model, dataloaders= test_dataloader)
 
-                assert len(train_loss)==1
-                assert len(val_loss)==1
-                assert len(test_loss)==1
-                train_loss, val_loss, test_loss= train_loss[0], val_loss[0], test_loss[0]
+                    assert len(train_loss)==1
+                    assert len(val_loss)==1
+                    assert len(test_loss)==1
+                    train_loss, val_loss, test_loss= train_loss[0], val_loss[0], test_loss[0]
 
-            train_loss_list.append(train_loss['val_loss'])
-            train_loss_0_list.append(train_loss['val_loss_0'])
-            train_loss_1_list.append(train_loss['val_loss_1'])
-            val_loss_list.append(val_loss['val_loss'])
-            val_loss_0_list.append(val_loss['val_loss_0'])
-            val_loss_1_list.append(val_loss['val_loss_1'])
-            test_loss_list.append(test_loss['val_loss'])
-            test_loss_0_list.append(test_loss['val_loss_0'])
-            test_loss_1_list.append(test_loss['val_loss_1'])
-            n_epochs_list.append(trainer.current_epoch), lr_list.append(optimal_lr)
+                    n_epochs_list.append(trainer.current_epoch), lr_list.append(optimal_lr)
+
+                    clustering_model = DeepClustering(autoencoder= model, lr= model.hparams.lr,
+                                                      n_clusters= trial.suggest_int("n_clusters", 2, 5))
+                    clustering_model.init_clusters(loader= train_dataloader)
+
+                    trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_total_loss", patience=7)],
+                                         enable_checkpointing=False)
+                    trainer.fit(model= copy.deepcopy(clustering_model),
+                                train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+
+                    trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
+                                         log_every_n_steps=np.ceil(len(training_data) / BATCH_SIZE).astype(int),
+                                         logger=TensorBoardLogger("tensorboard"))
+                    trainer.fit(model= clustering_model,
+                                train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+
+                    cl_train_loss = trainer.validate(model= clustering_model, dataloaders= train_dataloader)
+                    cl_val_loss = trainer.validate(model= clustering_model, dataloaders= val_dataloader)
+                    cl_test_loss = trainer.validate(model= clustering_model, dataloaders= test_dataloader)
+
+                    with torch.no_grad():
+                        z_train = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
+                                             for batch in train_dataloader])
+                        z_val = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
+                                           for batch in val_dataloader])
+                        z_test = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
+                                            for batch in test_dataloader])
+                        train_pred = clustering_model.update_assign(z_train)
+                        val_pred = clustering_model.update_assign(z_val)
+                        test_pred = clustering_model.update_assign(z_test)
+
+                    assert len(cl_train_loss)==1
+                    assert len(cl_val_loss)==1
+                    assert len(cl_test_loss)==1
+                    cl_train_loss, cl_val_loss, cl_test_loss = cl_train_loss[0], cl_val_loss[0], cl_test_loss[0]
+
+                train_loss_list.append(train_loss['val_loss'])
+                train_loss_view_list.append([value for key,value in train_loss.items() if key != "val_loss"])
+                val_loss_list.append(val_loss['val_loss'])
+                val_loss_view_list.append(value for key,value in val_loss.items() if key != "val_loss")
+                test_loss_list.append(test_loss['val_loss'])
+                test_loss_view_list.append(value for key,value in test_loss.items() if key != "val_loss")
+
+                train_total_loss_list.append(cl_train_loss['val_total_loss'])
+                train_au_loss_list.append(cl_train_loss['val_au_loss'])
+                train_au_loss_view_list.append([value for key,value in cl_train_loss.items() if key != "val_au_loss"])
+                train_dist_loss_list.append(cl_train_loss['val_dist_loss'])
+                val_total_loss_list.append(cl_val_loss['val_total_loss'])
+                val_au_loss_list.append(cl_val_loss['val_au_loss'])
+                val_au_loss_view_list.append([value for key,value in cl_val_loss.items() if key != "val_au_loss"])
+                val_dist_loss_list.append(cl_val_loss['val_dist_loss'])
+                test_total_loss_list.append(cl_test_loss['val_total_loss'])
+                test_au_loss_list.append(cl_test_loss['val_au_loss'])
+                test_au_loss_view_list.append([value for key,value in cl_test_loss.items() if key != "val_au_loss"])
+                test_dist_loss_list.append(cl_test_loss['val_dist_loss'])
+                n_cl_epochs_list.append(trainer.current_epoch)
+
+                train_silhscore_list.append(silhouette_score(z_train, train_pred))
+                val_silhscore_list.append(silhouette_score(z_val, val_pred))
+                test_silhscore_list.append(silhouette_score(z_test, test_pred))
+
+            if (np.mean(val_loss_list) >= 1) or (np.mean(val_au_loss_list) >= 1):
+                raise optuna.TrialPruned()
+
         trial.set_user_attr("train_loss_list", train_loss_list)
-        trial.set_user_attr("train_loss_0_list", train_loss_0_list)
-        trial.set_user_attr("train_loss_1_list", train_loss_1_list)
+        trial.set_user_attr("train_loss_view_list", train_loss_view_list)
         trial.set_user_attr("val_loss_list", val_loss_list)
-        trial.set_user_attr("val_loss_0_list", val_loss_0_list)
-        trial.set_user_attr("val_loss_1_list", val_loss_1_list)
+        trial.set_user_attr("val_loss_view_list", val_loss_view_list)
         trial.set_user_attr("test_loss_list", test_loss_list)
-        trial.set_user_attr("test_loss_0_list", test_loss_0_list)
-        trial.set_user_attr("test_loss_1_list", test_loss_1_list)
+        trial.set_user_attr("test_loss_view_list", test_loss_view_list)
+        trial.set_user_attr("train_loss", np.mean(train_loss_list))
+        trial.set_user_attr("train_loss_view", np.mean(train_loss_view_list, axis= 0).tolist())
+        trial.set_user_attr("val_loss", np.mean(val_loss_list))
+        trial.set_user_attr("val_loss_view_list", np.mean(val_loss_view_list, axis= 0).tolist())
+        trial.set_user_attr("test_loss", np.mean(test_loss_list))
+        trial.set_user_attr("train_loss_view", np.mean(test_loss_view_list, axis= 0).tolist())
         trial.set_user_attr("n_epochs_list", n_epochs_list)
         trial.set_user_attr("lr_list", lr_list)
 
-        return np.mean(val_loss_list)
+        trial.set_user_attr("train_total_loss_list", train_total_loss_list)
+        trial.set_user_attr("train_au_loss_list", train_au_loss_list)
+        trial.set_user_attr("train_au_loss_view_list", train_au_loss_view_list)
+        trial.set_user_attr("train_dist_loss_list", train_dist_loss_list)
+        trial.set_user_attr("val_total_loss_list", val_total_loss_list)
+        trial.set_user_attr("val_au_loss_list", val_au_loss_list)
+        trial.set_user_attr("val_au_loss_view_list", val_au_loss_view_list)
+        trial.set_user_attr("val_dist_loss_list", val_dist_loss_list)
+        trial.set_user_attr("test_total_loss_list", test_total_loss_list)
+        trial.set_user_attr("test_au_loss_list", test_au_loss_list)
+        trial.set_user_attr("test_au_loss_view_list", test_au_loss_view_list)
+        trial.set_user_attr("test_dist_loss_list", test_dist_loss_list)
+        trial.set_user_attr("train_total_loss", np.mean(train_total_loss_list))
+        trial.set_user_attr("train_au_loss", np.mean(train_au_loss_list))
+        trial.set_user_attr("train_au_loss_view", np.mean(train_au_loss_view_list, axis= 0).tolist())
+        trial.set_user_attr("train_dist_loss", np.mean(train_dist_loss_list))
+        trial.set_user_attr("val_total_loss", np.mean(val_total_loss_list))
+        trial.set_user_attr("val_au_loss", np.mean(val_au_loss_list))
+        trial.set_user_attr("val_au_loss_view", np.mean(val_au_loss_view_list, axis= 0).tolist())
+        trial.set_user_attr("val_dist_loss", np.mean(val_dist_loss_list))
+        trial.set_user_attr("test_total_loss", np.mean(test_total_loss_list))
+        trial.set_user_attr("test_au_loss", np.mean(test_au_loss_list))
+        trial.set_user_attr("test_au_loss_view", np.mean(test_au_loss_view_list, axis= 0).tolist())
+        trial.set_user_attr("test_dist_loss", np.mean(test_dist_loss_list))
+        trial.set_user_attr("n_cl_epochs_list", n_cl_epochs_list)
+        trial.set_user_attr("train_silhscore_list", train_silhscore_list)
+        trial.set_user_attr("val_silhscore_list", val_silhscore_list)
+        trial.set_user_attr("test_silhscore_list", test_silhscore_list)
+        trial.set_user_attr("train_silhscore", np.mean(train_silhscore_list))
+        trial.set_user_attr("val_silhscore", np.mean(val_silhscore_list))
+        trial.set_user_attr("test_silhscore", np.mean(test_silhscore_list))
 
-
-    # @staticmethod
-    # def _one_trial(train_index, val_index, trial, rnaseq_provtrain, methylation_provtrain, rnaseq_test,
-    #                methylation_test, rnaseq_pipeline, methylation_pipeline, batch_size):
-    #
-    #     rnaseq_train, rnaseq_val = rnaseq_provtrain.iloc[train_index], rnaseq_provtrain.iloc[val_index]
-    #     methylation_train, methylation_val = methylation_provtrain.iloc[train_index], methylation_provtrain.iloc[
-    #         val_index]
-    #
-    #     rnaseq_pipeline.fit(rnaseq_train)
-    #     transformed_rnaseq_train = rnaseq_pipeline.transform(rnaseq_train)
-    #     transformed_rnaseq_val = rnaseq_pipeline.transform(rnaseq_val)
-    #     transformed_rnaseq_test = rnaseq_pipeline.transform(rnaseq_test)
-    #
-    #     methylation_pipeline.fit(methylation_train)
-    #     transformed_methylation_train = methylation_pipeline.transform(methylation_train)
-    #     transformed_methylation_val = methylation_pipeline.transform(methylation_val)
-    #     transformed_methylation_test = methylation_pipeline.transform(methylation_test)
-    #
-    #     Xs_train = [transformed_rnaseq_train, transformed_methylation_train]
-    #     Xs_val = [transformed_rnaseq_val, transformed_methylation_val]
-    #     Xs_test = [transformed_rnaseq_test, transformed_methylation_test]
-    #     in_channels_list = [X.shape[1] for X in Xs_train]
-    #     hidden_channels_list = [[input_features // trial.params[f"num_units_{layer}"] for layer in range(trial.params["num_layers"])] \
-    #                             for input_features in in_channels_list]
-    #
-    #     training_data = MultiViewDataset(Xs=Xs_train)
-    #     validation_data = MultiViewDataset(Xs=Xs_val)
-    #     testing_data = MultiViewDataset(Xs=Xs_test)
-    #     train_dataloader = DataLoader(dataset=training_data, batch_size=batch_size, shuffle=True, num_workers=4)
-    #     val_dataloader = DataLoader(dataset=validation_data, batch_size=batch_size, shuffle=False, num_workers=4)
-    #     test_dataloader = DataLoader(dataset=testing_data, batch_size=batch_size, shuffle=False, num_workers=4)
-    #
-    #     with isolate_rng():
-    #         tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False))
-    #         lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-    #                                                 hidden_channels_list=hidden_channels_list),
-    #                                   train_dataloaders=train_dataloader)
-    #         optimal_lr = lr_finder.suggestion()
-    #
-    #         trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_loss", patience=7)],
-    #                              enable_checkpointing=False)
-    #         trainer.fit(model=MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-    #                                         hidden_channels_list=hidden_channels_list, lr=optimal_lr),
-    #                     train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-    #
-    #         trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
-    #                              log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int),
-    #                              logger=TensorBoardLogger("tensorboard"))
-    #         model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-    #                               hidden_channels_list=hidden_channels_list, lr=optimal_lr)
-    #         trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-    #
-    #         train_loss = trainer.validate(model=model, dataloaders=train_dataloader)
-    #         val_loss = trainer.validate(model=model, dataloaders=val_dataloader)
-    #         test_loss = trainer.validate(model=model, dataloaders=test_dataloader)
-    #
-    #     return train_loss, val_loss, test_loss
+        return np.mean(val_silhscore_list)
 
 
 
