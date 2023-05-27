@@ -39,7 +39,7 @@ class RemoveFeaturesWithNaN(BaseEstimator, TransformerMixin):
 
 class FeatureSelectionNMF(BaseEstimator, TransformerMixin):
 
-    def __init__(self, nmf: int, n_largest: int, verbose: bool = False):
+    def __init__(self, nmf: int, n_largest: int = 1, verbose: bool = False):
         self.nmf = nmf
         self.n_largest = n_largest
         self.verbose = verbose

@@ -1,4 +1,6 @@
 import copy
+import os
+import dill
 import numpy as np
 import optuna
 import pandas as pd
@@ -12,6 +14,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+from tqdm.notebook import tqdm
 torch.set_float32_matmul_precision('high')
 
 from src.model import MVAutoencoder
@@ -40,8 +43,12 @@ class Optimization:
                 units_in_layer = units_in_view[layer]
                 space = np.linspace(units_in_layer/num_units_option[1], units_in_layer/num_units_option[0], num=4,
                                     endpoint= True, retstep=True, dtype=int)
-                current_units = trial.suggest_int(f"num_units_view{view_idx}_layer{layer}", space[0][0], space[0][-1],
-                                                  step= space[1])
+                try:
+                    current_units = trial.suggest_int(f"num_units_view{view_idx}_layer{layer}", space[0][0],
+                                                      space[0][-1], step= space[1])
+                except ZeroDivisionError:
+                    raise optuna.TrialPruned()
+
                 units_in_view.append(current_units)
             num_units.append(units_in_view)
 
@@ -286,6 +293,21 @@ class Optimization:
 
         return result
 
+    @staticmethod
+    def optimize_optuna_and_save(study, n_trials, show_progress_bar, date, folder, **kwargs):
+        pbar = tqdm(range(n_trials)) if show_progress_bar else range(n_trials)
+        for _ in pbar:
+            try:
+                pbar.set_description(f"Best trial: {study.best_trial.number} Score {study.best_value}")
+            except ValueError:
+                pass
+            study.optimize(n_trials= 1, show_progress_bar= False, **kwargs)
+            with open(os.path.join(folder, f"optimization_optuna_{date}.pkl"), 'wb') as file:
+                dill.dump(study, file)
+            study.trials_dataframe().sort_values('value').to_csv(os.path.join(folder,
+                                                                              f"optimization_results_{date}.csv"),
+                                                                 index=False)
+        return study
 
 
 

@@ -2,6 +2,7 @@ import os
 
 RANDOM_STATE = 42
 
+RESULTS_FOLDER = "results"
 DATA_FOLDER = "data"
 PROCESSED_DATA_FOLDER = "processed"
 METHYLATION_FILANEME = "methylation_PDACTCGA.csv"
