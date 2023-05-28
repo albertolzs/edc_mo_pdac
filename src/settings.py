@@ -2,7 +2,9 @@ import os
 
 RANDOM_STATE = 42
 
+OUTPUT_FOLDER = "outputs"
 RESULTS_FOLDER = "results"
+results_path = os.path.join(OUTPUT_FOLDER, RESULTS_FOLDER)
 DATA_FOLDER = "data"
 PROCESSED_DATA_FOLDER = "processed"
 METHYLATION_FILANEME = "methylation_PDACTCGA.csv"

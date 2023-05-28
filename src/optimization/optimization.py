@@ -138,8 +138,8 @@ class Optimization:
             val_silhscore_list.extend(val_silhscore)
             test_silhscore_list.extend(test_silhscore)
             n_epochs_list.extend(n_epochs)
-            n_cl_epochs_list.extend(optimal_lr)
-            lr_list.extend(current_epoch)
+            n_cl_epochs_list.extend(current_epoch)
+            lr_list.extend(optimal_lr)
 
 
         trial.set_user_attr("train_loss_list", train_loss_list)
@@ -304,7 +304,7 @@ class Optimization:
             study.optimize(n_trials= 1, show_progress_bar= False, **kwargs)
             with open(os.path.join(folder, f"optimization_optuna_{date}.pkl"), 'wb') as file:
                 dill.dump(study, file)
-            study.trials_dataframe().sort_values('value').to_csv(os.path.join(folder,
+            study.trials_dataframe().sort_values(by= 'value', ascending=False).to_csv(os.path.join(folder,
                                                                               f"optimization_results_{date}.csv"),
                                                                  index=False)
         return study
