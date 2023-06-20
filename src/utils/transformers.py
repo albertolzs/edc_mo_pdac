@@ -39,9 +39,9 @@ class RemoveFeaturesWithNaN(BaseEstimator, TransformerMixin):
 
 class FeatureSelectionNMF(BaseEstimator, TransformerMixin):
 
-    def __init__(self, nmf: int, n_largest: int = 1, verbose: bool = False):
+    def __init__(self, nmf: int, n_features_per_component: int = 1, verbose: bool = False):
         self.nmf = nmf
-        self.n_largest = n_largest
+        self.n_features_per_component = n_features_per_component
         self.verbose = verbose
 
     def fit(self, X, y=None):
@@ -49,7 +49,7 @@ class FeatureSelectionNMF(BaseEstimator, TransformerMixin):
         components = pd.DataFrame(components, columns= X.columns).abs()
         columns = []
         for idx, row in components.iterrows():
-            cols = row.drop(index=columns).nlargest(self.n_largest).index.to_list()
+            cols = row.drop(index=columns).nlargest(self.n_features_per_component).index.to_list()
             columns.extend(cols)
         self.columns_ = X.columns.intersection(pd.Index(columns))
         if self.verbose:

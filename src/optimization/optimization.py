@@ -24,31 +24,26 @@ from src.utils import MultiViewDataset
 
 class Optimization:
 
-    @staticmethod
-    def objective(trial, Xs, samples, pipelines, max_features: int = 5000, num_layers_option: list = [1, 2],
-                  num_units_option: list = [2, 10], n_clusters_option: list = [2, 5],
-                  random_state: int = None,
-                  n_jobs: int = None):
-
+    def objective(self, trial, Xs, samples, pipelines, features_per_component_options: list = [1, 10, 1],
+                  num_layers_option: list = [1, 2, 1], num_units_option: list = [2, 10, 2],
+                  n_clusters_option: list = [2, 5, 1], random_state: int = None, n_jobs: int = None):
+        features_per_component = trial.suggest_int(f"features_per_component", features_per_component_options[0],
+                                                   features_per_component_options[1],
+                                                   features_per_component_options[2])
         n_components_pipes = [pipeline.get_params()["featureselectionnmf__nmf__n_components"] for pipeline in pipelines]
-        num_features = [trial.suggest_int(f"num_features_{idx}", n_components_pipe,
-                                          n_components_pipe*(max_features/n_components_pipe), step=n_components_pipe)
-                        for idx,n_components_pipe in enumerate(n_components_pipes)]
+        num_features = [n_components_pipe*features_per_component for n_components_pipe in n_components_pipes]
 
-        num_layers = trial.suggest_int("num_layers", num_layers_option[0], num_layers_option[1])
+        num_layers = trial.suggest_int("num_layers", num_layers_option[0], num_layers_option[1], num_layers_option[2])
         num_units = []
         for view_idx,units in enumerate(num_features):
             units_in_view = [units]
             for layer in range(num_layers):
                 units_in_layer = units_in_view[layer]
-                space = np.linspace(units_in_layer/num_units_option[1], units_in_layer/num_units_option[0], num=4,
-                                    endpoint= True, retstep=True, dtype=int)
-                try:
-                    current_units = trial.suggest_int(f"num_units_view{view_idx}_layer{layer}", space[0][0],
-                                                      space[0][-1], step= space[1])
-                except ZeroDivisionError:
+                divisor = trial.suggest_int(f"divisor_view{view_idx}_layer{layer}", num_units_option[0],
+                                            num_units_option[1], num_units_option[2])
+                current_units = units_in_layer//divisor
+                if current_units == 0:
                     raise optuna.TrialPruned()
-
                 units_in_view.append(current_units)
             num_units.append(units_in_view)
 
@@ -58,7 +53,7 @@ class Optimization:
             in_channels_list.append(units_in_view[0])
             hidden_channels_list.append(units_in_view[1:])
 
-        n_clusters = trial.suggest_int("n_clusters", n_clusters_option[0], n_clusters_option[1])
+        n_clusters = trial.suggest_int("n_clusters", n_clusters_option[0], n_clusters_option[1], n_clusters_option[2])
 
         train_loss_list, train_loss_view_list = [], []
         val_loss_list, val_loss_view_list = [], []
@@ -71,8 +66,8 @@ class Optimization:
         train_silhscore_list, val_silhscore_list, test_silhscore_list = [], [], []
         BATCH_SIZE = 64
         trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
-        pipelines = [pipeline.set_params(**{"featureselectionnmf__n_largest": feats // comps})
-                     for pipeline,feats,comps in zip(pipelines, num_features, n_components_pipes)]
+        pipelines = [pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
+                     for pipeline in pipelines]
 
         for provtrain_index, test_index in KFold(n_splits=5, shuffle=True, random_state=random_state).split(samples):
             train_loc, test_loc = samples[provtrain_index], samples[test_index]
@@ -80,7 +75,7 @@ class Optimization:
             Xs_provtest = [X.loc[test_loc] for X in Xs]
 
             samples_train= pd.concat(Xs_provtrain, axis= 1).index
-            results_step = Parallel(n_jobs=n_jobs)(delayed(Optimization._step)(Xs_provtrain, Xs_provtest, samples_train,
+            results_step = Parallel(n_jobs=n_jobs)(delayed(self._step)(Xs_provtrain, Xs_provtest, samples_train,
                                                                                train_index, val_index, pipelines,
                                                                                BATCH_SIZE, in_channels_list,
                                                                                hidden_channels_list, n_clusters)
@@ -142,6 +137,8 @@ class Optimization:
             lr_list.extend(optimal_lr)
 
 
+        trial.set_user_attr("num_features", num_features)
+        trial.set_user_attr("num_units", num_units)
         trial.set_user_attr("train_loss_list", train_loss_list)
         trial.set_user_attr("train_loss_view_list", train_loss_view_list)
         trial.set_user_attr("val_loss_list", val_loss_list)
@@ -192,8 +189,7 @@ class Optimization:
         return np.mean(val_silhscore_list)
 
 
-    @staticmethod
-    def _step(Xs_provtrain, Xs_provtest, samples_train, train_index, val_index, pipelines, batch_size,
+    def _step(self, Xs_provtrain, Xs_provtest, samples_train, train_index, val_index, pipelines, batch_size,
               in_channels_list, hidden_channels_list, n_clusters):
 
         train_loc, val_loc = samples_train[train_index], samples_train[val_index]
@@ -213,72 +209,80 @@ class Optimization:
         test_dataloader = DataLoader(dataset=testing_data, batch_size=batch_size, shuffle=False)
 
         with isolate_rng():
-            tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False, enable_progress_bar= False,
-                                     enable_model_summary= False))
-            lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                                    hidden_channels_list=hidden_channels_list),
-                                      train_dataloaders=train_dataloader)
-            optimal_lr = lr_finder.suggestion()
+            results = self.training(n_clusters=n_clusters, in_channels_list=in_channels_list,
+                                    hidden_channels_list=hidden_channels_list, train_dataloader=train_dataloader,
+                                    val_dataloader=val_dataloader, test_dataloader=test_dataloader,
+                                    log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int))
+        return results
 
-            trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_loss", patience=7)],
-                                 enable_checkpointing=False, enable_progress_bar= False,
-                                 enable_model_summary= False)
-            trainer.fit(model=MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                  hidden_channels_list= hidden_channels_list, lr= optimal_lr),
-                        train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-            trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
-                                 log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int),
-                                 logger=TensorBoardLogger("tensorboard"), enable_progress_bar= False)
-            model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                  hidden_channels_list= hidden_channels_list, lr= optimal_lr)
-            trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+    def training(self, n_clusters, in_channels_list, hidden_channels_list, train_dataloader, val_dataloader,
+                 test_dataloader, log_every_n_steps):
+        tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False, enable_progress_bar=False,
+                                 enable_model_summary=False))
+        lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+                                                hidden_channels_list=hidden_channels_list),
+                                  train_dataloaders=train_dataloader)
+        optimal_lr = lr_finder.suggestion()
 
-            train_loss = trainer.validate(model=model, dataloaders= train_dataloader, verbose=False)
-            val_loss = trainer.validate(model=model, dataloaders= val_dataloader, verbose=False)
-            test_loss = trainer.validate(model=model, dataloaders= test_dataloader, verbose=False)
+        trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_loss", patience=7)],
+                             enable_checkpointing=False, enable_progress_bar=False,
+                             enable_model_summary=False)
+        trainer.fit(model=MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+                                        hidden_channels_list=hidden_channels_list, lr=optimal_lr),
+                    train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-            assert len(train_loss)==1
-            assert len(val_loss)==1
-            assert len(test_loss)==1
-            train_loss, val_loss, test_loss= train_loss[0], val_loss[0], test_loss[0]
+        trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
+                             log_every_n_steps=log_every_n_steps, logger=TensorBoardLogger("tensorboard"),
+                             enable_progress_bar=False)
+        model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+                              hidden_channels_list=hidden_channels_list, lr=optimal_lr)
+        trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-            n_epochs = trainer.current_epoch
+        train_loss = trainer.validate(model=model, dataloaders=train_dataloader, verbose=False)
+        val_loss = trainer.validate(model=model, dataloaders=val_dataloader, verbose=False)
+        test_loss = trainer.validate(model=model, dataloaders=test_dataloader, verbose=False)
 
-            clustering_model = DeepClustering(autoencoder= model, lr= model.hparams.lr, n_clusters= n_clusters)
-            clustering_model.init_clusters(loader= train_dataloader)
+        assert len(train_loss) == 1
+        assert len(val_loss) == 1
+        assert len(test_loss) == 1
+        train_loss, val_loss, test_loss = train_loss[0], val_loss[0], test_loss[0]
 
-            trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_total_loss", patience=7)],
-                                 enable_checkpointing=False, enable_progress_bar= False, enable_model_summary= False)
-            trainer.fit(model= copy.deepcopy(clustering_model),
-                        train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+        n_epochs = trainer.current_epoch
 
-            trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
-                                 log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int),
-                                 logger=TensorBoardLogger("tensorboard"), enable_progress_bar= False,
-                                 enable_model_summary= False)
-            trainer.fit(model= clustering_model,
-                        train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+        clustering_model = DeepClustering(autoencoder=model, lr=model.hparams.lr, n_clusters=n_clusters)
+        clustering_model.init_clusters(loader=train_dataloader)
 
-            cl_train_loss = trainer.validate(model= clustering_model, dataloaders= train_dataloader, verbose=False)
-            cl_val_loss = trainer.validate(model= clustering_model, dataloaders= val_dataloader, verbose=False)
-            cl_test_loss = trainer.validate(model= clustering_model, dataloaders= test_dataloader, verbose=False)
+        trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_total_loss", patience=7)],
+                             enable_checkpointing=False, enable_progress_bar=False, enable_model_summary=False)
+        trainer.fit(model=copy.deepcopy(clustering_model),
+                    train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-            with torch.no_grad():
-                z_train = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                                     for batch in train_dataloader])
-                z_val = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                                   for batch in val_dataloader])
-                z_test = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                                    for batch in test_dataloader])
-                train_pred = clustering_model.update_assign(z_train)
-                val_pred = clustering_model.update_assign(z_val)
-                test_pred = clustering_model.update_assign(z_test)
+        trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
+                             log_every_n_steps=log_every_n_steps, logger=TensorBoardLogger("tensorboard"),
+                             enable_progress_bar=False, enable_model_summary=False)
+        trainer.fit(model=clustering_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-            assert len(cl_train_loss)==1
-            assert len(cl_val_loss)==1
-            assert len(cl_test_loss)==1
-            cl_train_loss, cl_val_loss, cl_test_loss = cl_train_loss[0], cl_val_loss[0], cl_test_loss[0]
+        cl_train_loss = trainer.validate(model=clustering_model, dataloaders=train_dataloader, verbose=False)
+        cl_val_loss = trainer.validate(model=clustering_model, dataloaders=val_dataloader, verbose=False)
+        cl_test_loss = trainer.validate(model=clustering_model, dataloaders=test_dataloader, verbose=False)
+
+        with torch.no_grad():
+            z_train = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
+                                 for batch in train_dataloader])
+            z_val = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
+                               for batch in val_dataloader])
+            z_test = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
+                                for batch in test_dataloader])
+            train_pred = clustering_model.update_assign(z_train)
+            val_pred = clustering_model.update_assign(z_val)
+            test_pred = clustering_model.update_assign(z_test)
+
+        assert len(cl_train_loss) == 1
+        assert len(cl_val_loss) == 1
+        assert len(cl_test_loss) == 1
+        cl_train_loss, cl_val_loss, cl_test_loss = cl_train_loss[0], cl_val_loss[0], cl_test_loss[0]
+
 
         train_silhscore = silhouette_score(z_train, train_pred)
         val_silhscore = silhouette_score(z_val, val_pred)
@@ -289,13 +293,15 @@ class Optimization:
             "cl_train_loss": cl_train_loss, "cl_val_loss": cl_val_loss, "cl_test_loss": cl_test_loss,
             "n_epochs": n_epochs, "optimal_lr": optimal_lr, "current_epoch": trainer.current_epoch,
             "train_silhscore": train_silhscore, "val_silhscore": val_silhscore, "test_silhscore": test_silhscore,
+            "trainer": trainer, "model": clustering_model
         }
 
         return result
 
+
     @staticmethod
     def optimize_optuna_and_save(study, n_trials, show_progress_bar, date, folder, **kwargs):
-        pbar = tqdm(range(n_trials)) if show_progress_bar else range(n_trials)
+        pbar = tqdm(range(len(study.trials), n_trials)) if show_progress_bar else range(n_trials)
         for _ in pbar:
             try:
                 pbar.set_description(f"Best trial: {study.best_trial.number} Score {study.best_value}")
