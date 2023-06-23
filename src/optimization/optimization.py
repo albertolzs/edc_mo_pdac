@@ -1,4 +1,3 @@
-import copy
 import os
 import dill
 import numpy as np
@@ -25,8 +24,9 @@ from src.utils import MultiViewDataset
 class Optimization:
 
     def objective(self, trial, Xs, samples, pipelines, features_per_component_options: list = [1, 10, 1],
-                  num_layers_option: list = [1, 2, 1], num_units_option: list = [2, 10, 2],
-                  n_clusters_option: list = [2, 5, 1], random_state: int = None, n_jobs: int = None):
+                  num_layers_option: list = [1, 2, 1], num_units_option: list = [2, 10, 2], n_epochs_option= [20,100,20],
+                  lambda_option: list = [0., 1., 0.25], n_clusters_option: list = [2, 5, 1], random_state: int = None,
+                  n_jobs: int = None, save_pipelines: bool = False, folder: str = ""):
         features_per_component = trial.suggest_int(f"features_per_component", features_per_component_options[0],
                                                    features_per_component_options[1],
                                                    features_per_component_options[2])
@@ -54,6 +54,8 @@ class Optimization:
             hidden_channels_list.append(units_in_view[1:])
 
         n_clusters = trial.suggest_int("n_clusters", n_clusters_option[0], n_clusters_option[1], n_clusters_option[2])
+        n_epochs = trial.suggest_int("n_epochs", n_epochs_option[0], n_epochs_option[1], n_epochs_option[2])
+        lambda_coeff = trial.suggest_float("lambda_coeff", lambda_option[0], lambda_option[1], step=lambda_option[2])
 
         train_loss_list, train_loss_view_list = [], []
         val_loss_list, val_loss_view_list = [], []
@@ -62,25 +64,35 @@ class Optimization:
         train_au_loss_list, train_au_loss_view_list, train_dist_loss_list, train_total_loss_list = [], [], [], []
         val_au_loss_list, val_au_loss_view_list, val_dist_loss_list, val_total_loss_list = [], [], [], []
         test_au_loss_list, test_au_loss_view_list, test_dist_loss_list, test_total_loss_list = [], [], [], []
-        n_epochs_list, n_cl_epochs_list, lr_list = [], [], []
+        lr_list = []
         train_silhscore_list, val_silhscore_list, test_silhscore_list = [], [], []
         BATCH_SIZE = 64
         trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
         pipelines = [pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
                      for pipeline in pipelines]
 
-        for provtrain_index, test_index in KFold(n_splits=5, shuffle=True, random_state=random_state).split(samples):
+        for idx_first_split, (provtrain_index, test_index) in enumerate(KFold(n_splits=5, shuffle=True,
+                                                                            random_state=random_state).split(samples)):
             train_loc, test_loc = samples[provtrain_index], samples[test_index]
             Xs_provtrain = [X.loc[train_loc] for X in Xs]
             Xs_provtest = [X.loc[test_loc] for X in Xs]
 
             samples_train= pd.concat(Xs_provtrain, axis= 1).index
-            results_step = Parallel(n_jobs=n_jobs)(delayed(self._step)(Xs_provtrain, Xs_provtest, samples_train,
-                                                                               train_index, val_index, pipelines,
-                                                                               BATCH_SIZE, in_channels_list,
-                                                                               hidden_channels_list, n_clusters)
-                                         for train_index, val_index in KFold(n_splits=5, shuffle= True,
-                                                                             random_state=random_state).split(samples_train))
+            results_step = Parallel(n_jobs=n_jobs)(delayed(self._step)(Xs_provtrain=Xs_provtrain, Xs_provtest=Xs_provtest,
+                                                                       samples_train=samples_train, train_index=train_index,
+                                                                       val_index=val_index, pipelines=pipelines,
+                                                                       batch_size=BATCH_SIZE, in_channels_list=in_channels_list,
+                                                                       hidden_channels_list=hidden_channels_list,
+                                                                       n_clusters=n_clusters, n_epochs=n_epochs,
+                                                                       lambda_coeff=lambda_coeff,
+                                                                       save_pipelines=save_pipelines,
+                                                                       idx_first_split=idx_first_split,
+                                                                       idx_second_split=idx_second_split,
+                                                                       features_per_component=features_per_component,
+                                                                       folder=folder
+                                                                       )
+                                                   for idx_second_split, (train_index, val_index) in enumerate(
+                KFold(n_splits=5, shuffle= True,random_state=random_state).split(samples_train)))
 
             train_loss = [i['train_loss']['val_loss'] for i in results_step]
             val_loss = [i['val_loss']['val_loss'] for i in results_step]
@@ -104,9 +116,7 @@ class Optimization:
             train_silhscore = [i['train_silhscore'] for i in results_step]
             val_silhscore = [i['val_silhscore'] for i in results_step]
             test_silhscore = [i['test_silhscore'] for i in results_step]
-            n_epochs = [i['n_epochs'] for i in results_step]
             optimal_lr = [i['optimal_lr'] for i in results_step]
-            current_epoch = [i['current_epoch'] for i in results_step]
 
             if (np.mean(val_loss) >= 1) or (np.mean(cl_val_au_loss) >= 1):
                 raise optuna.TrialPruned()
@@ -132,8 +142,6 @@ class Optimization:
             train_silhscore_list.extend(train_silhscore)
             val_silhscore_list.extend(val_silhscore)
             test_silhscore_list.extend(test_silhscore)
-            n_epochs_list.extend(n_epochs)
-            n_cl_epochs_list.extend(current_epoch)
             lr_list.extend(optimal_lr)
 
 
@@ -151,7 +159,6 @@ class Optimization:
         trial.set_user_attr("val_loss_view_list", np.mean(val_loss_view_list, axis= 0).tolist())
         trial.set_user_attr("test_loss", np.mean(test_loss_list))
         trial.set_user_attr("train_loss_view", np.mean(test_loss_view_list, axis= 0).tolist())
-        trial.set_user_attr("n_epochs_list", n_epochs_list)
         trial.set_user_attr("lr_list", lr_list)
 
         trial.set_user_attr("train_total_loss_list", train_total_loss_list)
@@ -178,7 +185,6 @@ class Optimization:
         trial.set_user_attr("test_au_loss", np.mean(test_au_loss_list))
         trial.set_user_attr("test_au_loss_view", np.mean(test_au_loss_view_list, axis= 0).tolist())
         trial.set_user_attr("test_dist_loss", np.mean(test_dist_loss_list))
-        trial.set_user_attr("n_cl_epochs_list", n_cl_epochs_list)
         trial.set_user_attr("train_silhscore_list", train_silhscore_list)
         trial.set_user_attr("val_silhscore_list", val_silhscore_list)
         trial.set_user_attr("test_silhscore_list", test_silhscore_list)
@@ -190,13 +196,31 @@ class Optimization:
 
 
     def _step(self, Xs_provtrain, Xs_provtest, samples_train, train_index, val_index, pipelines, batch_size,
-              in_channels_list, hidden_channels_list, n_clusters):
+              in_channels_list, hidden_channels_list, n_clusters, n_epochs, lambda_coeff,
+              save_pipelines, idx_first_split, idx_second_split, features_per_component, folder):
 
         train_loc, val_loc = samples_train[train_index], samples_train[val_index]
         Xs_train = [X.loc[train_loc] for X in Xs_provtrain]
         Xs_val = [X.loc[val_loc] for X in Xs_provtrain]
 
-        pipelines = [pipeline.fit(X) for pipeline,X in zip(pipelines, Xs_train)]
+        if save_pipelines:
+            pipelines = [pipeline.fit(X) for pipeline,X in zip(pipelines, Xs_train)]
+            for idx_pipeline, pipeline in enumerate(pipelines):
+                pipeline_name = f"pipeline{idx_pipeline}_fsplit{idx_first_split}_ssplit{idx_second_split}.pkl"
+                with open(os.path.join(folder, pipeline_name), 'wb') as f:
+                    dill.dump(pipeline, f)
+            error_nmf = [pipeline[-2].nmf.reconstruction_err_ for pipeline in pipelines]
+        else:
+            pipelines = []
+            for idx_pipeline, X in enumerate(Xs_provtrain):
+                pipeline_name = f"pipeline{idx_pipeline}_fsplit{idx_first_split}_ssplit{idx_second_split}.pkl"
+                with open(os.path.join(folder, pipeline_name), 'rb') as f:
+                    pipeline = dill.load(f)
+                pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
+                pipeline[-2].select_features()
+                pipeline[-1].fit(pipeline[:-1].transform(X))
+                pipelines.append(pipeline)
+
         Xs_train = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_train)]
         Xs_val = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_val)]
         Xs_test = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_provtest)]
@@ -211,13 +235,15 @@ class Optimization:
         with isolate_rng():
             results = self.training(n_clusters=n_clusters, in_channels_list=in_channels_list,
                                     hidden_channels_list=hidden_channels_list, train_dataloader=train_dataloader,
-                                    val_dataloader=val_dataloader, test_dataloader=test_dataloader,
-                                    log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int))
+                                    val_dataloader=val_dataloader, test_dataloader=test_dataloader, n_epochs=n_epochs,
+                                    log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int),
+                                    lambda_coeff=lambda_coeff)
+        results["reconstruction_err_nmf"]= error_nmf
         return results
 
 
     def training(self, n_clusters, in_channels_list, hidden_channels_list, train_dataloader, val_dataloader,
-                 test_dataloader, log_every_n_steps):
+                 test_dataloader, n_epochs, log_every_n_steps, lambda_coeff):
         tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False, enable_progress_bar=False,
                                  enable_model_summary=False))
         lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
@@ -232,9 +258,8 @@ class Optimization:
                                         hidden_channels_list=hidden_channels_list, lr=optimal_lr),
                     train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-        trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
-                             log_every_n_steps=log_every_n_steps, logger=TensorBoardLogger("tensorboard"),
-                             enable_progress_bar=False)
+        trainer = pl.Trainer(max_epochs=n_epochs, log_every_n_steps=log_every_n_steps,
+                             logger=TensorBoardLogger("tensorboard"), enable_progress_bar=False)
         model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
                               hidden_channels_list=hidden_channels_list, lr=optimal_lr)
         trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
@@ -248,19 +273,12 @@ class Optimization:
         assert len(test_loss) == 1
         train_loss, val_loss, test_loss = train_loss[0], val_loss[0], test_loss[0]
 
-        n_epochs = trainer.current_epoch
-
-        clustering_model = DeepClustering(autoencoder=model, lr=model.hparams.lr, n_clusters=n_clusters)
+        clustering_model = DeepClustering(autoencoder=model, lr=model.hparams.lr, n_clusters=n_clusters,
+                                          lambda_coeff=lambda_coeff)
         clustering_model.init_clusters(loader=train_dataloader)
 
-        trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_total_loss", patience=7)],
-                             enable_checkpointing=False, enable_progress_bar=False, enable_model_summary=False)
-        trainer.fit(model=copy.deepcopy(clustering_model),
-                    train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-
-        trainer = pl.Trainer(max_epochs=trainer.current_epoch - trainer.callbacks[0].patience,
-                             log_every_n_steps=log_every_n_steps, logger=TensorBoardLogger("tensorboard"),
-                             enable_progress_bar=False, enable_model_summary=False)
+        trainer = pl.Trainer(max_epochs= n_epochs, log_every_n_steps=log_every_n_steps,
+                             logger=TensorBoardLogger("tensorboard"), enable_progress_bar=False, enable_model_summary=False)
         trainer.fit(model=clustering_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
         cl_train_loss = trainer.validate(model=clustering_model, dataloaders=train_dataloader, verbose=False)
@@ -291,9 +309,8 @@ class Optimization:
         result = {
             "train_loss": train_loss, "val_loss": val_loss, "test_loss": test_loss,
             "cl_train_loss": cl_train_loss, "cl_val_loss": cl_val_loss, "cl_test_loss": cl_test_loss,
-            "n_epochs": n_epochs, "optimal_lr": optimal_lr, "current_epoch": trainer.current_epoch,
-            "train_silhscore": train_silhscore, "val_silhscore": val_silhscore, "test_silhscore": test_silhscore,
-            "trainer": trainer, "model": clustering_model
+            "optimal_lr": optimal_lr, "trainer": trainer, "model": clustering_model,
+            "train_silhscore": train_silhscore, "val_silhscore": val_silhscore, "test_silhscore": test_silhscore
         }
 
         return result
@@ -301,7 +318,9 @@ class Optimization:
 
     @staticmethod
     def optimize_optuna_and_save(study, n_trials, show_progress_bar, date, folder, **kwargs):
-        pbar = tqdm(range(len(study.trials), n_trials)) if show_progress_bar else range(n_trials)
+        # pbar = tqdm(range(len(study.trials), n_trials)) if show_progress_bar else range(n_trials)
+        pbar = tqdm(range(n_trials)) if show_progress_bar else range(n_trials)
+        pbar.update(len(study.trials))
         for _ in pbar:
             try:
                 pbar.set_description(f"Best trial: {study.best_trial.number} Score {study.best_value}")
@@ -310,9 +329,10 @@ class Optimization:
             study.optimize(n_trials= 1, show_progress_bar= False, **kwargs)
             with open(os.path.join(folder, f"optimization_optuna_{date}.pkl"), 'wb') as file:
                 dill.dump(study, file)
-            study.trials_dataframe().sort_values(by= 'value', ascending=False).to_csv(os.path.join(folder,
-                                                                              f"optimization_results_{date}.csv"),
-                                                                 index=False)
+            study.trials_dataframe().sort_values(by= 'value',
+                                                 ascending=False).to_csv(os.path.join(folder,
+                                                                                      f"optimization_results_{date}.csv"),
+                                                                         index=False)
         return study
 
 

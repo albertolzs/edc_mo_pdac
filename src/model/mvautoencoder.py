@@ -52,8 +52,8 @@ class MVAutoencoder(pl.LightningModule):
 
     def _get_reconstruction_loss(self, batch):
         x_hat = self.forward(batch)
-        individual_loss = [F.mse_loss(target, X) for target,X in zip(batch, x_hat)]
-        loss = F.mse_loss(torch.cat(batch, dim= 1), torch.cat(x_hat, dim= 1))
+        individual_loss = [F.l1_loss(target, X) for target,X in zip(batch, x_hat)]
+        loss = F.l1_loss(torch.cat(batch, dim= 1), torch.cat(x_hat, dim= 1))
         return loss, individual_loss
 
 

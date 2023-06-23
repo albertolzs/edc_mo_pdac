@@ -44,21 +44,28 @@ class FeatureSelectionNMF(BaseEstimator, TransformerMixin):
         self.n_features_per_component = n_features_per_component
         self.verbose = verbose
 
+
     def fit(self, X, y=None):
-        components = self.nmf.fit(X).components_
-        components = pd.DataFrame(components, columns= X.columns).abs()
-        columns = []
-        for idx, row in components.iterrows():
-            cols = row.drop(index=columns).nlargest(self.n_features_per_component).index.to_list()
-            columns.extend(cols)
-        self.columns_ = X.columns.intersection(pd.Index(columns))
+        self.nmf.fit(X)
+        self.select_features()
         if self.verbose:
             print(f"{self.__class__.__name__} keeping {len(self.columns_)} features")
         return self
 
+
     def transform(self, X, y=None):
         transformed_X = X[self.columns_]
         return transformed_X
+
+
+    def select_features(self):
+        components = pd.DataFrame(self.nmf.components_, columns= self.nmf.feature_names_in_).abs()
+        columns = []
+        for idx, row in components.iterrows():
+            cols = row.drop(index=columns).nlargest(self.n_features_per_component).index.to_list()
+            columns.extend(cols)
+        self.columns_ = pd.Index(self.nmf.feature_names_in_).intersection(pd.Index(columns))
+
 
 class RemoveCorrelatedFeatures(BaseEstimator, TransformerMixin):
 
