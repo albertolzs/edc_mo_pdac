@@ -209,17 +209,19 @@ class Optimization:
                 pipeline_name = f"pipeline{idx_pipeline}_fsplit{idx_first_split}_ssplit{idx_second_split}.pkl"
                 with open(os.path.join(folder, pipeline_name), 'wb') as f:
                     dill.dump(pipeline, f)
-            error_nmf = [pipeline[-2].nmf.reconstruction_err_ for pipeline in pipelines]
         else:
             pipelines = []
             for idx_pipeline, X in enumerate(Xs_provtrain):
                 pipeline_name = f"pipeline{idx_pipeline}_fsplit{idx_first_split}_ssplit{idx_second_split}.pkl"
                 with open(os.path.join(folder, pipeline_name), 'rb') as f:
                     pipeline = dill.load(f)
-                pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
-                pipeline[-2].select_features()
-                pipeline[-1].fit(pipeline[:-1].transform(X))
+                if "featureselectionnmf" in pipeline.named_steps.keys():
+                    pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
+                    pipeline[-2].select_features()
+                    pipeline[-1].fit(pipeline[:-1].transform(X))
                 pipelines.append(pipeline)
+
+        error_nmf = [pipeline["featureselectionnmf"].nmf.reconstruction_err_ for pipeline in pipelines if "featureselectionnmf" in pipeline.named_steps.keys()]
 
         Xs_train = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_train)]
         Xs_val = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_val)]
