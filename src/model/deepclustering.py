@@ -78,7 +78,7 @@ class DeepClustering(pl.LightningModule):
         loss_dict = {f"train_au_loss_{idx}": view_loss for idx,view_loss in enumerate(au_individual_loss)}
         loss_dict["train_au_loss"] = au_loss
         loss_dict["train_dist_loss"] = dist_loss
-        loss = self.hparams.lambda_coeff*au_loss + (1 - self.hparams.lambda_coeff)*dist_loss
+        loss = au_loss + self.hparams.lambda_coeff*dist_loss
         loss_dict["train_total_loss"] = loss
         self.log_dict(loss_dict)
         return loss
@@ -97,7 +97,7 @@ class DeepClustering(pl.LightningModule):
         loss_dict = {f"val_au_loss_{idx}": view_loss for idx,view_loss in enumerate(au_individual_loss)}
         loss_dict["val_au_loss"] = au_loss
         loss_dict["val_dist_loss"] = dist_loss
-        loss = self.hparams.lambda_coeff*au_loss + (1 - self.hparams.lambda_coeff)*dist_loss
+        loss = au_loss + self.hparams.lambda_coeff*dist_loss
         loss_dict["val_total_loss"] = loss
         self.log_dict(loss_dict)
 
@@ -115,7 +115,7 @@ class DeepClustering(pl.LightningModule):
         loss_dict = {f"test_au_loss_{idx}": view_loss for idx,view_loss in enumerate(au_individual_loss)}
         loss_dict["test_au_loss"] = au_loss
         loss_dict["test_dist_loss"] = dist_loss
-        loss = self.hparams.lambda_coeff*au_loss + (1 - self.hparams.lambda_coeff)*dist_loss
+        loss = au_loss + self.hparams.lambda_coeff*dist_loss
         loss_dict["test_total_loss"] = loss
         self.log_dict(loss_dict)
 

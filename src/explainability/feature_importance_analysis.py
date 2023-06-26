@@ -27,7 +27,8 @@ class FeatureImportance:
                   in_channels_list: list, hidden_channels_list: list, n_clusters: list, n_epochs: list,
                   lambda_coeff: list, random_state: int = None, folder: str = "",
                   n_jobs: int = None):
-        BATCH_SIZE = 64
+        BATCH_SIZE = 32
+        in_channels_list = [i - 1 for i in in_channels_list]
         trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
         train_silhscore_list, val_silhscore_list, test_silhscore_list = [], [], []
         view_idx = trial.params["view_idx"]
@@ -89,7 +90,7 @@ class FeatureImportance:
                 pipeline[-2].select_features()
                 pipeline[-1].fit(pipeline[:-1].transform(X))
             if idx_pipeline == view_idx:
-                pipeline = make_pipeline(*pipeline, FunctionTransformer(lambda x: x.assign({feature_to_drop : 0})))
+                pipeline = make_pipeline(*pipeline, FunctionTransformer(lambda x: x.drop(columns = [feature_to_drop])))
             pipelines.append(pipeline)
 
         Xs_train = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_train)]

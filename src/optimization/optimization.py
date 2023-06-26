@@ -1,4 +1,6 @@
 import os
+import shutil
+
 import dill
 import numpy as np
 import optuna
@@ -34,15 +36,14 @@ class Optimization:
         num_features = [n_components_pipe*features_per_component for n_components_pipe in n_components_pipes]
 
         num_layers = trial.suggest_int("num_layers", num_layers_option[0], num_layers_option[1], num_layers_option[2])
+        divisor_units = trial.suggest_int(f"divisor_units", num_units_option[0], num_units_option[1], num_units_option[2])
         num_units = []
         for view_idx,units in enumerate(num_features):
             units_in_view = [units]
             for layer in range(num_layers):
                 units_in_layer = units_in_view[layer]
-                divisor = trial.suggest_int(f"divisor_view{view_idx}_layer{layer}", num_units_option[0],
-                                            num_units_option[1], num_units_option[2])
-                current_units = units_in_layer//divisor
-                if current_units == 0:
+                current_units = units_in_layer//divisor_units
+                if current_units < 50:
                     raise optuna.TrialPruned()
                 units_in_view.append(current_units)
             num_units.append(units_in_view)
@@ -55,7 +56,7 @@ class Optimization:
 
         n_clusters = trial.suggest_int("n_clusters", n_clusters_option[0], n_clusters_option[1], n_clusters_option[2])
         n_epochs = trial.suggest_int("n_epochs", n_epochs_option[0], n_epochs_option[1], n_epochs_option[2])
-        lambda_coeff = trial.suggest_float("lambda_coeff", lambda_option[0], lambda_option[1], step=lambda_option[2])
+        lambda_coeff = trial.suggest_float("lambda_coeff", lambda_option[0], lambda_option[1], log=True)
 
         train_loss_list, train_loss_view_list = [], []
         val_loss_list, val_loss_view_list = [], []
@@ -66,7 +67,7 @@ class Optimization:
         test_au_loss_list, test_au_loss_view_list, test_dist_loss_list, test_total_loss_list = [], [], [], []
         lr_list = []
         train_silhscore_list, val_silhscore_list, test_silhscore_list = [], [], []
-        BATCH_SIZE = 64
+        BATCH_SIZE = 32
         trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
         pipelines = [pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
                      for pipeline in pipelines]
@@ -266,6 +267,8 @@ class Optimization:
                               hidden_channels_list=hidden_channels_list, lr=optimal_lr)
         trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
+
+        # todo save also the loss history
         train_loss = trainer.validate(model=model, dataloaders=train_dataloader, verbose=False)
         val_loss = trainer.validate(model=model, dataloaders=val_dataloader, verbose=False)
         test_loss = trainer.validate(model=model, dataloaders=test_dataloader, verbose=False)
@@ -335,6 +338,9 @@ class Optimization:
                                                  ascending=False).to_csv(os.path.join(folder,
                                                                                       f"optimization_results_{date}.csv"),
                                                                          index=False)
+            shutil.rmtree("lightning_logs/", ignore_errors=True)
+            shutil.rmtree("checkpoints/", ignore_errors=True)
+            shutil.rmtree("tensorboard/", ignore_errors=True)
         return study
 
 
