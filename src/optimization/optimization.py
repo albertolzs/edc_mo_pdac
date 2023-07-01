@@ -7,7 +7,6 @@ import optuna
 import pandas as pd
 import torch
 from joblib import Parallel, delayed
-from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.tuner import Tuner
 from pytorch_lightning.utilities.seed import isolate_rng
@@ -27,8 +26,9 @@ class Optimization:
 
     def objective(self, trial, Xs, samples, pipelines, features_per_component_options: list = [1, 10, 1],
                   num_layers_option: list = [1, 2, 1], num_units_option: list = [2, 10, 2], n_epochs_option= [20,100,20],
-                  lambda_option: list = [0., 1., 0.25], n_clusters_option: list = [2, 5, 1], random_state: int = None,
-                  n_jobs: int = None, save_pipelines: bool = False, folder: str = ""):
+                  lambda_option: list = [0., 1., 0.25], n_clusters_option: list = [2, 5, 1], batch_size: int = 32,
+                  latent_space_option: list = [50, 150, 50],
+                  random_state: int = None, n_jobs: int = None, save_pipelines: bool = False, folder: str = ""):
         features_per_component = trial.suggest_int(f"features_per_component", features_per_component_options[0],
                                                    features_per_component_options[1],
                                                    features_per_component_options[2])
@@ -36,6 +36,7 @@ class Optimization:
         num_features = [n_components_pipe*features_per_component for n_components_pipe in n_components_pipes]
 
         num_layers = trial.suggest_int("num_layers", num_layers_option[0], num_layers_option[1], num_layers_option[2])
+        latent_space = trial.suggest_int("latent_space", latent_space_option[0], latent_space_option[1], latent_space_option[2])
         divisor_units = trial.suggest_int(f"divisor_units", num_units_option[0], num_units_option[1], num_units_option[2])
         num_units = []
         for view_idx,units in enumerate(num_features):
@@ -43,16 +44,25 @@ class Optimization:
             for layer in range(num_layers):
                 units_in_layer = units_in_view[layer]
                 current_units = units_in_layer//divisor_units
-                if current_units < 50:
+                if current_units*len(num_features) < latent_space:
                     raise optuna.TrialPruned()
                 units_in_view.append(current_units)
             num_units.append(units_in_view)
 
         in_channels_list = []
         hidden_channels_list = []
+        first_hidden = 0
         for units_in_view in num_units:
             in_channels_list.append(units_in_view[0])
             hidden_channels_list.append(units_in_view[1:])
+            first_hidden += units_in_view[1]
+        first_hidden //= len(num_units)
+        for hidden_channels in hidden_channels_list:
+            hidden_channels[0] = first_hidden
+
+        architecture = []
+        for i,j in zip(in_channels_list, hidden_channels_list):
+            architecture.append([i] + j + [latent_space])
 
         n_clusters = trial.suggest_int("n_clusters", n_clusters_option[0], n_clusters_option[1], n_clusters_option[2])
         n_epochs = trial.suggest_int("n_epochs", n_epochs_option[0], n_epochs_option[1], n_epochs_option[2])
@@ -67,8 +77,7 @@ class Optimization:
         test_au_loss_list, test_au_loss_view_list, test_dist_loss_list, test_total_loss_list = [], [], [], []
         lr_list = []
         train_silhscore_list, val_silhscore_list, test_silhscore_list = [], [], []
-        BATCH_SIZE = 32
-        trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
+        trial.set_user_attr("batch_size", batch_size)
         pipelines = [pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
                      for pipeline in pipelines]
 
@@ -82,8 +91,9 @@ class Optimization:
             results_step = Parallel(n_jobs=n_jobs)(delayed(self._step)(Xs_provtrain=Xs_provtrain, Xs_provtest=Xs_provtest,
                                                                        samples_train=samples_train, train_index=train_index,
                                                                        val_index=val_index, pipelines=pipelines,
-                                                                       batch_size=BATCH_SIZE, in_channels_list=in_channels_list,
+                                                                       batch_size=batch_size, in_channels_list=in_channels_list,
                                                                        hidden_channels_list=hidden_channels_list,
+                                                                       latent_space=latent_space,
                                                                        n_clusters=n_clusters, n_epochs=n_epochs,
                                                                        lambda_coeff=lambda_coeff,
                                                                        save_pipelines=save_pipelines,
@@ -146,6 +156,7 @@ class Optimization:
             lr_list.extend(optimal_lr)
 
 
+        trial.set_user_attr("architecture", architecture)
         trial.set_user_attr("num_features", num_features)
         trial.set_user_attr("num_units", num_units)
         trial.set_user_attr("train_loss_list", train_loss_list)
@@ -198,7 +209,7 @@ class Optimization:
 
     def _step(self, Xs_provtrain, Xs_provtest, samples_train, train_index, val_index, pipelines, batch_size,
               in_channels_list, hidden_channels_list, n_clusters, n_epochs, lambda_coeff,
-              save_pipelines, idx_first_split, idx_second_split, features_per_component, folder):
+              save_pipelines, idx_first_split, idx_second_split, features_per_component, folder, latent_space):
 
         train_loc, val_loc = samples_train[train_index], samples_train[val_index]
         Xs_train = [X.loc[train_loc] for X in Xs_provtrain]
@@ -222,7 +233,8 @@ class Optimization:
                     pipeline[-1].fit(pipeline[:-1].transform(X))
                 pipelines.append(pipeline)
 
-        error_nmf = [pipeline["featureselectionnmf"].nmf.reconstruction_err_ for pipeline in pipelines if "featureselectionnmf" in pipeline.named_steps.keys()]
+        error_nmf = [pipeline["featureselectionnmf"].nmf.reconstruction_err_ for pipeline in pipelines
+                     if "featureselectionnmf" in pipeline.named_steps.keys()]
 
         Xs_train = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_train)]
         Xs_val = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_val)]
@@ -236,7 +248,7 @@ class Optimization:
         test_dataloader = DataLoader(dataset=testing_data, batch_size=batch_size, shuffle=False)
 
         with isolate_rng():
-            results = self.training(n_clusters=n_clusters, in_channels_list=in_channels_list,
+            results = self.training(n_clusters=n_clusters, in_channels_list=in_channels_list, latent_space=latent_space,
                                     hidden_channels_list=hidden_channels_list, train_dataloader=train_dataloader,
                                     val_dataloader=val_dataloader, test_dataloader=test_dataloader, n_epochs=n_epochs,
                                     log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int),
@@ -246,25 +258,18 @@ class Optimization:
 
 
     def training(self, n_clusters, in_channels_list, hidden_channels_list, train_dataloader, val_dataloader,
-                 test_dataloader, n_epochs, log_every_n_steps, lambda_coeff):
+                 test_dataloader, n_epochs, log_every_n_steps, lambda_coeff, latent_space):
         tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False, enable_progress_bar=False,
                                  enable_model_summary=False))
-        lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+        lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, latent_space=latent_space,
                                                 hidden_channels_list=hidden_channels_list),
                                   train_dataloaders=train_dataloader)
         optimal_lr = lr_finder.suggestion()
 
-        trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_loss", patience=7)],
-                             enable_checkpointing=False, enable_progress_bar=False,
-                             enable_model_summary=False)
-        trainer.fit(model=MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                        hidden_channels_list=hidden_channels_list, lr=optimal_lr),
-                    train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-
         trainer = pl.Trainer(max_epochs=n_epochs, log_every_n_steps=log_every_n_steps,
                              logger=TensorBoardLogger("tensorboard"), enable_progress_bar=False)
-        model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                              hidden_channels_list=hidden_channels_list, lr=optimal_lr)
+        model = MVAutoencoder(in_channels_list=in_channels_list, hidden_channels_list=hidden_channels_list,
+                              latent_space=latent_space, lr=optimal_lr)
         trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 

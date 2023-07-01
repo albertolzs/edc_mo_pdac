@@ -1,10 +1,12 @@
 import os
+import shutil
+
 import dill
 import numpy as np
+import optuna
 import pandas as pd
 import torch
 from joblib import Parallel, delayed
-from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.tuner import Tuner
 from pytorch_lightning.utilities.seed import isolate_rng
 from sklearn.metrics import silhouette_score
@@ -24,16 +26,14 @@ from src.utils import MultiViewDataset
 class FeatureImportance:
 
     def objective(self, trial, Xs, samples, original_score, features_per_component: int,
-                  in_channels_list: list, hidden_channels_list: list, n_clusters: list, n_epochs: list,
-                  lambda_coeff: list, random_state: int = None, folder: str = "",
+                  in_channels_list: list, hidden_channels_list: list, n_clusters: int, n_epochs: int,
+                  lambda_coeff: int, batch_size: int = 32, random_state: int = None, folder: str = "", optimization_folder: str = "",
                   n_jobs: int = None):
-        BATCH_SIZE = 32
-        in_channels_list = [i - 1 for i in in_channels_list]
-        trial.set_user_attr("BATCH_SIZE", BATCH_SIZE)
-        train_silhscore_list, val_silhscore_list, test_silhscore_list = [], [], []
-        view_idx = trial.params["view_idx"]
-        feature_to_drop = trial.params["feature_to_drop"]
-        Xs[view_idx][feature_to_drop] = 0
+        batch_size = 32
+        trial.set_user_attr("batch_size", batch_size)
+        train_silhscore_list, val_silhscore_list, test_silhscore_list, feature_selected_list = [], [], [], []
+        view_idx = trial.system_attrs["fixed_params"]["view_idx"]
+        feature_to_drop = trial.system_attrs["fixed_params"]["feature_to_drop"]
         for idx_first_split, (provtrain_index, test_index) in enumerate(KFold(n_splits=5, shuffle=True,
                                                                               random_state=random_state).split(samples)):
             train_loc, test_loc = samples[provtrain_index], samples[test_index]
@@ -44,14 +44,15 @@ class FeatureImportance:
             results_step = Parallel(n_jobs=n_jobs)(delayed(self._step)(Xs_provtrain=Xs_provtrain, Xs_provtest=Xs_provtest,
                                                                        samples_train=samples_train, train_index=train_index,
                                                                        val_index=val_index,
-                                                                       batch_size=BATCH_SIZE, in_channels_list=in_channels_list,
+                                                                       batch_size=batch_size,
                                                                        hidden_channels_list=hidden_channels_list,
                                                                        n_clusters=n_clusters, n_epochs=n_epochs,
                                                                        lambda_coeff=lambda_coeff,
                                                                        idx_first_split=idx_first_split,
                                                                        idx_second_split=idx_second_split,
                                                                        features_per_component=features_per_component,
-                                                                       folder=folder, feature_to_drop=feature_to_drop,
+                                                                       optimization_folder=optimization_folder,
+                                                                       feature_to_drop=feature_to_drop,
                                                                        view_idx=view_idx
                                                                        )
                                                    for idx_second_split, (train_index, val_index) in enumerate(
@@ -60,21 +61,26 @@ class FeatureImportance:
             train_silhscore = [i['train_silhscore'] for i in results_step]
             val_silhscore = [i['val_silhscore'] for i in results_step]
             test_silhscore = [i['test_silhscore'] for i in results_step]
+            feature_selected = [i['selected'] for i in results_step]
             train_silhscore_list.extend(train_silhscore)
             val_silhscore_list.extend(val_silhscore)
             test_silhscore_list.extend(test_silhscore)
-
+            feature_selected_list.extend(feature_selected)
 
         trial.set_user_attr("train_silhscore_list", train_silhscore_list)
         trial.set_user_attr("val_silhscore_list", val_silhscore_list)
         trial.set_user_attr("test_silhscore_list", test_silhscore_list)
+        trial.set_user_attr("train_silhscore", np.mean(train_silhscore_list))
+        trial.set_user_attr("val_silhscore", np.mean(val_silhscore_list))
+        trial.set_user_attr("test_silhscore", np.mean(test_silhscore_list))
+        trial.set_user_attr("feature_selected", sum(feature_selected_list))
 
         return original_score - np.mean(val_silhscore_list)
 
 
     def _step(self, Xs_provtrain, Xs_provtest, samples_train, train_index, val_index, batch_size,
-              in_channels_list, hidden_channels_list, n_clusters, features_per_component, n_epochs, lambda_coeff,
-              idx_first_split, idx_second_split, folder, view_idx, feature_to_drop):
+              hidden_channels_list, n_clusters, features_per_component, n_epochs, lambda_coeff,
+              idx_first_split, idx_second_split, optimization_folder, view_idx, feature_to_drop):
 
         train_loc, val_loc = samples_train[train_index], samples_train[val_index]
         Xs_train = [X.loc[train_loc] for X in Xs_provtrain]
@@ -83,14 +89,15 @@ class FeatureImportance:
         pipelines = []
         for idx_pipeline, X in enumerate(Xs_provtrain):
             pipeline_name = f"pipeline{idx_pipeline}_fsplit{idx_first_split}_ssplit{idx_second_split}.pkl"
-            with open(os.path.join(folder, pipeline_name), 'rb') as f:
+            with open(os.path.join(optimization_folder, pipeline_name), 'rb') as f:
                 pipeline = dill.load(f)
             if "featureselectionnmf" in pipeline.named_steps.keys():
                 pipeline.set_params(**{"featureselectionnmf__n_features_per_component": features_per_component})
                 pipeline[-2].select_features()
+                selected = feature_to_drop in pipeline[-2].columns_
+                if selected:
+                    pipeline[-2].columns_ = pipeline[-2].columns_.drop(feature_to_drop)
                 pipeline[-1].fit(pipeline[:-1].transform(X))
-            if idx_pipeline == view_idx:
-                pipeline = make_pipeline(*pipeline, FunctionTransformer(lambda x: x.drop(columns = [feature_to_drop])))
             pipelines.append(pipeline)
 
         Xs_train = [pipeline.transform(X) for pipeline,X in zip(pipelines, Xs_train)]
@@ -105,11 +112,12 @@ class FeatureImportance:
         test_dataloader = DataLoader(dataset=testing_data, batch_size=batch_size, shuffle=False)
 
         with isolate_rng():
-            results = self.training(n_clusters=n_clusters, in_channels_list=in_channels_list,
+            results = self.training(n_clusters=n_clusters, in_channels_list=[len(X.columns) for X in Xs_train],
                                     hidden_channels_list=hidden_channels_list, train_dataloader=train_dataloader,
                                     val_dataloader=val_dataloader, test_dataloader=test_dataloader, n_epochs=n_epochs,
                                     log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int),
                                     lambda_coeff=lambda_coeff)
+            results["selected"] = selected
         return results
 
 
@@ -121,13 +129,6 @@ class FeatureImportance:
                                                 hidden_channels_list=hidden_channels_list),
                                   train_dataloaders=train_dataloader)
         optimal_lr = lr_finder.suggestion()
-
-        trainer = pl.Trainer(logger=False, callbacks=[EarlyStopping(monitor="val_loss", patience=7)],
-                             enable_checkpointing=False, enable_progress_bar=False,
-                             enable_model_summary=False)
-        trainer.fit(model=MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                                        hidden_channels_list=hidden_channels_list, lr=optimal_lr),
-                    train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
         trainer = pl.Trainer(max_epochs=n_epochs, log_every_n_steps=log_every_n_steps,
                              logger=False, enable_progress_bar=False)
@@ -172,7 +173,10 @@ class FeatureImportance:
         pbar.update(len(study.trials))
         for _ in pbar:
             try:
-                pbar.set_description(f"Best trial: {study.best_trial.number} Score {study.best_value}")
+                best_trial = study.best_trial
+                view_idx = best_trial.system_attrs["fixed_params"]["view_idx"]
+                feature_to_drop = best_trial.system_attrs["fixed_params"]["feature_to_drop"]
+                pbar.set_description(f"Best trial: {view_idx}; {feature_to_drop} Score {study.best_value}")
             except ValueError:
                 pass
             study.optimize(n_trials= 1, show_progress_bar= False, **kwargs)
@@ -182,6 +186,9 @@ class FeatureImportance:
                                                  ascending=False).to_csv(os.path.join(folder,
                                                                                       f"feature_importance_results_{date}.csv"),
                                                                          index=False)
+        shutil.rmtree("lightning_logs/", ignore_errors=True)
+        shutil.rmtree("checkpoints/", ignore_errors=True)
+        shutil.rmtree("tensorboard/", ignore_errors=True)
         return study
 
 

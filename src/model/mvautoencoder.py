@@ -8,23 +8,32 @@ import torch.nn.functional as F
 
 class MVAutoencoder(pl.LightningModule):
 
-    def __init__(self, in_channels_list: list, out_channels: int, hidden_channels_list: list, lr: float = 1e-3,
+    def __init__(self, in_channels_list: list, hidden_channels_list: list, latent_space: int, lr: float = 1e-3,
                  dropout=None, act='PRELU', bias=True, adn_ordering="NA"):
         super().__init__()
         self.views = len(in_channels_list)
         # Saving hyperparameters of autoencoder
         self.save_hyperparameters()
         # Creating encoder and decoder
-        for idx, in_channels, hidden_channels in zip(range(len(in_channels_list)), in_channels_list,
-                                                     hidden_channels_list):
-            setattr(self, f"encoder_{idx}",
-                    FCN(in_channels=in_channels, out_channels=out_channels,
-                        hidden_channels=hidden_channels, dropout=dropout,
-                        act=act, bias=bias, adn_ordering=adn_ordering))
-            setattr(self, f"decoder_{idx}",
-                    FCN(in_channels=out_channels * len(in_channels_list), out_channels=in_channels,
-                        hidden_channels=list(reversed(hidden_channels)), dropout=dropout,
-                        act=act, bias=bias, adn_ordering=adn_ordering))
+        for idx, (in_channels, hidden_channels) in enumerate(zip(in_channels_list, hidden_channels_list)):
+            encoder = FCN(in_channels=in_channels, out_channels = 1,
+                          hidden_channels=hidden_channels, dropout=dropout,
+                          act=act, bias=bias, adn_ordering=adn_ordering)
+            delattr(encoder, "output")
+            decoder = FCN(in_channels=hidden_channels[-1]*2, out_channels=in_channels,
+                          hidden_channels=list(reversed(hidden_channels[:-1])), dropout=dropout,
+                          act=act, bias=bias, adn_ordering=adn_ordering)
+
+            setattr(self, f"encoder_{idx}", encoder)
+            setattr(self, f"decoder_{idx}", decoder)
+
+        encoder = nn.Sequential(nn.Linear(in_features = hidden_channels[-1]*2, out_features = latent_space, bias=bias),
+                                nn.PReLU())
+        setattr(self, f"encoder_{idx+1}", encoder)
+        decoder = FCN(in_channels=latent_space, out_channels=1, hidden_channels=[hidden_channels[-1]*2], dropout=dropout,
+                      act=act, bias=bias, adn_ordering=adn_ordering)
+        delattr(decoder, "output")
+        setattr(self, f"decoder_{idx+1}", decoder)
 
 
     def forward(self, batch):
@@ -39,10 +48,14 @@ class MVAutoencoder(pl.LightningModule):
             encoder = getattr(self, f"encoder_{X_idx}")
             z.append(encoder(X))
         z = torch.cat(z, dim= 1)
+        encoder = getattr(self, f"encoder_{X_idx+1}")
+        z = encoder(z)
         return z
 
 
     def decode(self, z):
+        decoder = getattr(self, f"decoder_{self.views}")
+        z = decoder(z)
         x_hat = []
         for idx in range(self.views):
             decoder = getattr(self, f"decoder_{idx}")

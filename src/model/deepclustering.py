@@ -120,4 +120,20 @@ class DeepClustering(pl.LightningModule):
         self.log_dict(loss_dict)
 
 
+    def predict_step(self, batch, batch_idx = None):
+        z = self.forward(batch).detach().cpu().numpy()
+        pred = self.update_assign(z)
+        return pred
+
+
+    def save_features(self, features):
+        self.save_features_ = features
+
+
+    def predict_step(self, batch, batch_idx = None):
+        z = self.forward(batch).detach().cpu().numpy()
+        pred = self.update_assign(z)
+        return pred
+
+
 
