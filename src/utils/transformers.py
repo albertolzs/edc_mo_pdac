@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.preprocessing import FunctionTransformer
 
 
 class RemoveFeaturesWithZeros(BaseEstimator, TransformerMixin):
@@ -105,3 +106,19 @@ class RemoveFeaturesLowMAE(BaseEstimator, TransformerMixin):
     def transform(self, X, y=None):
         transformed_X = X[self.columns_]
         return transformed_X
+
+
+class SelectSomaticChromosomes(FunctionTransformer):
+
+    pass
+
+
+class Log2Transformation(FunctionTransformer):
+
+    def __int__(self):
+        super().__init__(lambda x: np.log2(1 + x))
+
+
+class SelectGpgsGeneSymbol(FunctionTransformer):
+
+    pass

@@ -25,11 +25,10 @@ from src.utils import MultiViewDataset
 
 class FeatureImportance:
 
-    def objective(self, trial, Xs, samples, original_score, features_per_component: int,
+    def objective(self, trial, Xs, samples, original_score, features_per_component: int, latent_space: int,
                   in_channels_list: list, hidden_channels_list: list, n_clusters: int, n_epochs: int,
                   lambda_coeff: int, batch_size: int = 32, random_state: int = None, folder: str = "", optimization_folder: str = "",
                   n_jobs: int = None):
-        batch_size = 32
         trial.set_user_attr("batch_size", batch_size)
         train_silhscore_list, val_silhscore_list, test_silhscore_list, feature_selected_list = [], [], [], []
         view_idx = trial.system_attrs["fixed_params"]["view_idx"]
@@ -46,6 +45,7 @@ class FeatureImportance:
                                                                        val_index=val_index,
                                                                        batch_size=batch_size,
                                                                        hidden_channels_list=hidden_channels_list,
+                                                                       latent_space=latent_space,
                                                                        n_clusters=n_clusters, n_epochs=n_epochs,
                                                                        lambda_coeff=lambda_coeff,
                                                                        idx_first_split=idx_first_split,
@@ -78,7 +78,7 @@ class FeatureImportance:
         return original_score - np.mean(val_silhscore_list)
 
 
-    def _step(self, Xs_provtrain, Xs_provtest, samples_train, train_index, val_index, batch_size,
+    def _step(self, Xs_provtrain, Xs_provtest, samples_train, train_index, val_index, batch_size, latent_space,
               hidden_channels_list, n_clusters, features_per_component, n_epochs, lambda_coeff,
               idx_first_split, idx_second_split, optimization_folder, view_idx, feature_to_drop):
 
@@ -116,24 +116,24 @@ class FeatureImportance:
                                     hidden_channels_list=hidden_channels_list, train_dataloader=train_dataloader,
                                     val_dataloader=val_dataloader, test_dataloader=test_dataloader, n_epochs=n_epochs,
                                     log_every_n_steps=np.ceil(len(training_data) / batch_size).astype(int),
-                                    lambda_coeff=lambda_coeff)
+                                    lambda_coeff=lambda_coeff, latent_space=latent_space)
             results["selected"] = selected
         return results
 
 
     def training(self, n_clusters, in_channels_list, hidden_channels_list, train_dataloader, val_dataloader,
-                 test_dataloader, n_epochs, log_every_n_steps, lambda_coeff):
+                 test_dataloader, n_epochs, log_every_n_steps, lambda_coeff, latent_space):
         tuner = Tuner(pl.Trainer(logger=False, enable_checkpointing=False, enable_progress_bar=False,
                                  enable_model_summary=False))
-        lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
+        lr_finder = tuner.lr_find(MVAutoencoder(in_channels_list=in_channels_list, latent_space=latent_space,
                                                 hidden_channels_list=hidden_channels_list),
                                   train_dataloaders=train_dataloader)
         optimal_lr = lr_finder.suggestion()
 
         trainer = pl.Trainer(max_epochs=n_epochs, log_every_n_steps=log_every_n_steps,
                              logger=False, enable_progress_bar=False)
-        model = MVAutoencoder(in_channels_list=in_channels_list, out_channels=50,
-                              hidden_channels_list=hidden_channels_list, lr=optimal_lr)
+        model = MVAutoencoder(in_channels_list=in_channels_list, hidden_channels_list=hidden_channels_list,
+                              latent_space=latent_space, lr=optimal_lr)
         trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
         clustering_model = DeepClustering(autoencoder=model, lr=model.hparams.lr, n_clusters=n_clusters,
@@ -145,15 +145,12 @@ class FeatureImportance:
         trainer.fit(model=clustering_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
         with torch.no_grad():
-            z_train = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                                 for batch in train_dataloader])
-            z_val = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                               for batch in val_dataloader])
-            z_test = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                                for batch in test_dataloader])
-            train_pred = clustering_model.update_assign(z_train)
-            val_pred = clustering_model.update_assign(z_val)
-            test_pred = clustering_model.update_assign(z_test)
+            z_train = torch.vstack([clustering_model.autoencoder.encode(batch) for batch in train_dataloader])
+            z_val = torch.vstack([clustering_model.autoencoder.encode(batch) for batch in val_dataloader])
+            z_test = torch.vstack([clustering_model.autoencoder.encode(batch) for batch in test_dataloader])
+            train_pred = clustering_model.predict_cluster_from_embedding(z_train)
+            val_pred = clustering_model.predict_cluster_from_embedding(z_val)
+            test_pred = clustering_model.predict_cluster_from_embedding(z_test)
 
         train_silhscore = silhouette_score(z_train, train_pred)
         val_silhscore = silhouette_score(z_val, val_pred)
@@ -170,7 +167,7 @@ class FeatureImportance:
     def optimize_optuna_and_save(study, n_trials, show_progress_bar, date, folder, **kwargs):
         # pbar = tqdm(range(len(study.trials), n_trials)) if show_progress_bar else range(n_trials)
         pbar = tqdm(range(n_trials)) if show_progress_bar else range(n_trials)
-        pbar.update(len(study.trials))
+        pbar.update(sum([trial.state.is_finished() for trial in study.trials]))
         for _ in pbar:
             try:
                 best_trial = study.best_trial
@@ -186,9 +183,9 @@ class FeatureImportance:
                                                  ascending=False).to_csv(os.path.join(folder,
                                                                                       f"feature_importance_results_{date}.csv"),
                                                                          index=False)
-        shutil.rmtree("lightning_logs/", ignore_errors=True)
-        shutil.rmtree("checkpoints/", ignore_errors=True)
-        shutil.rmtree("tensorboard/", ignore_errors=True)
+            shutil.rmtree("lightning_logs", ignore_errors=True)
+            shutil.rmtree("checkpoints", ignore_errors=True)
+            shutil.rmtree("tensorboard", ignore_errors=True)
         return study
 
 

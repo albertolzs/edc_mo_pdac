@@ -97,6 +97,10 @@ class MVAutoencoder(pl.LightningModule):
         self.log_dict(loss_dict)
 
 
+    def predict_step(self, batch, batch_idx):
+        return self.encode(batch)
+        
+
 class FCN(FullyConnectedNet):
 
     def _get_layer(self, in_channels: int, out_channels: int, bias: bool) -> nn.Sequential:

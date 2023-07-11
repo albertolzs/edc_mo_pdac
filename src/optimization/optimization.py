@@ -15,11 +15,13 @@ from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from tqdm.notebook import tqdm
+from sklearn.cluster import KMeans
 torch.set_float32_matmul_precision('high')
 
 from src.model import MVAutoencoder
 from src.model.deepclustering import DeepClustering
 from src.utils import MultiViewDataset
+from src import settings
 
 
 class Optimization:
@@ -51,14 +53,9 @@ class Optimization:
 
         in_channels_list = []
         hidden_channels_list = []
-        first_hidden = 0
         for units_in_view in num_units:
             in_channels_list.append(units_in_view[0])
             hidden_channels_list.append(units_in_view[1:])
-            first_hidden += units_in_view[1]
-        first_hidden //= len(num_units)
-        for hidden_channels in hidden_channels_list:
-            hidden_channels[0] = first_hidden
 
         architecture = []
         for i,j in zip(in_channels_list, hidden_channels_list):
@@ -285,7 +282,7 @@ class Optimization:
 
         clustering_model = DeepClustering(autoencoder=model, lr=model.hparams.lr, n_clusters=n_clusters,
                                           lambda_coeff=lambda_coeff)
-        clustering_model.init_clusters(loader=train_dataloader)
+        clustering_model.init_clusters(loader = train_dataloader)
 
         trainer = pl.Trainer(max_epochs= n_epochs, log_every_n_steps=log_every_n_steps,
                              logger=TensorBoardLogger("tensorboard"), enable_progress_bar=False, enable_model_summary=False)
@@ -296,16 +293,13 @@ class Optimization:
         cl_test_loss = trainer.validate(model=clustering_model, dataloaders=test_dataloader, verbose=False)
 
         with torch.no_grad():
-            z_train = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                                 for batch in train_dataloader])
-            z_val = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                               for batch in val_dataloader])
-            z_test = np.vstack([clustering_model.autoencoder.encode(batch).detach().cpu().numpy()
-                                for batch in test_dataloader])
-            train_pred = clustering_model.update_assign(z_train)
-            val_pred = clustering_model.update_assign(z_val)
-            test_pred = clustering_model.update_assign(z_test)
-
+            z_train = torch.vstack([clustering_model.autoencoder.encode(batch) for batch in train_dataloader])
+            z_val = torch.vstack([clustering_model.autoencoder.encode(batch) for batch in val_dataloader])
+            z_test = torch.vstack([clustering_model.autoencoder.encode(batch) for batch in test_dataloader])
+            train_pred = clustering_model.predict_cluster_from_embedding(z_train)
+            val_pred = clustering_model.predict_cluster_from_embedding(z_val)
+            test_pred = clustering_model.predict_cluster_from_embedding(z_test)
+            
         assert len(cl_train_loss) == 1
         assert len(cl_val_loss) == 1
         assert len(cl_test_loss) == 1
@@ -343,9 +337,9 @@ class Optimization:
                                                  ascending=False).to_csv(os.path.join(folder,
                                                                                       f"optimization_results_{date}.csv"),
                                                                          index=False)
-            shutil.rmtree("lightning_logs/", ignore_errors=True)
-            shutil.rmtree("checkpoints/", ignore_errors=True)
-            shutil.rmtree("tensorboard/", ignore_errors=True)
+            shutil.rmtree("lightning_logs", ignore_errors=True)
+            shutil.rmtree("checkpoints", ignore_errors=True)
+            shutil.rmtree("tensorboard", ignore_errors=True)
         return study
 
 
