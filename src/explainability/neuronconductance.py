@@ -303,9 +303,8 @@ def _run_forward(forward_func: Callable, inputs: Any, target: TargetType = None,
 
 def plot_feature_importance(features, top_n, values, neuron_selector, figsize= (12,6)):
     importances = torch.cat(values, 1).mean(0).detach().numpy()
-    idxs = np.abs(cond_vals.mean(0)).argsort()[::-1].tolist()[:top_n].tolist()
     features = features.to_frame("feature")
     features["importance"] = importances
-    features = features.iloc[idxs]
+    features = features.sort_values("importance", ascending= False).iloc[:top_n]
     features = features.set_index("feature")
     features.plot(kind= "bar", xlabel = "Feature", title = f"Top {top_n} average feature importances for neuron {neuron_selector}", figsize=figsize, legend=None)

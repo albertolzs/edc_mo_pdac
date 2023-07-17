@@ -20,7 +20,13 @@ class DeepClustering(pl.LightningModule):
 
     def forward(self, batch):
         z = self.autoencoder.encode(batch)
-        return z
+        m = 2
+        dis_mat = [torch.sum(torch.nn.functional.mse_loss(z, cluster_center.repeat(len(z), 1), reduction='none'), dim = 1)
+                   for cluster_center in self.cluster_centers_.to(z.device)]
+        dis_mat = torch.stack(dis_mat).transpose(0, 1)
+        inv_weight = dis_mat**(2/(m-1))*torch.repeat_interleave(((1./dis_mat)**(2/(m-1))).sum(1).reshape(-1,1), self.hparams.n_clusters, 1)
+        prob = 1./inv_weight
+        return prob
 
 
     def _loss(self, batch, z, cluster_id):
@@ -45,7 +51,8 @@ class DeepClustering(pl.LightningModule):
 
 
     def predict_cluster_from_embedding(self, z):
-        dis_mat = [torch.sqrt(torch.sum(torch.nn.functional.mse_loss(z, cluster_center.repeat(len(z), 1), reduction='none'), dim = 1)) for cluster_center in self.cluster_centers_.to(z.device)]
+        dis_mat = [torch.sqrt(torch.sum(torch.nn.functional.mse_loss(z, cluster_center.repeat(len(z), 1), reduction='none'), dim = 1))
+                   for cluster_center in self.cluster_centers_.to(z.device)]
         dis_mat = torch.stack(dis_mat)
         return torch.argmin(dis_mat, dim = 0)
 
