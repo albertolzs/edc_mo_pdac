@@ -1,5 +1,7 @@
+captum==0.6.0
 dill==0.3.6
 joblib==1.2.0
+matplotlib==3.7.1
 monai==1.1.0
 numpy==1.24.3
 optuna==3.1.1

@@ -304,7 +304,7 @@ def plot_comparison_attributions_weights(lc_attr, weights, layer_name = "embeddi
     ax.set_title(f'Aggregated neuron importances and learned weights in the {layer_name} layer of the model')
     ax.bar(x_axis_data + width, y_axis_lc_attr, width, align='center', alpha=0.5, color='red')
     ax.bar(x_axis_data + 2 * width, y_axis_layer_weight, width, align='center', alpha=0.5, color='green')
-    plt.legend(legends, loc=2, prop={'size': 20})
+    plt.legend(legends, prop={'size': 15})
     ax.autoscale_view()
     if len(y_axis_layer_weight) <= 100:
         x_axis_labels = [f'Neuron {i}' for i in range(len(y_axis_layer_weight))]
@@ -316,4 +316,4 @@ def plot_comparison_attributions_weights(lc_attr, weights, layer_name = "embeddi
 def plot_attribution_distribution(cond_vals, strong_features, weak_features, figsize = (10, 4)):
     cond_vals = pd.DataFrame(cond_vals).iloc[:, strong_features + weak_features]
     cond_vals.plot(kind = "hist", subplots=True, layout=(2,len(strong_features)), figsize = figsize, bins = 100, style="blue", 
-                   title = "Distribution of each neuron's attributions", sharex = True,  sharey = True)
+                   title = "Distribution of each neuron's weights", sharex = True,  sharey = True)
