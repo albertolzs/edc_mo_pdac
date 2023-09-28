@@ -1,21 +1,5 @@
-# A deep clustering model for PDAC patient stratification using multi-omics data
-
-# INF-8605 Interpretability in deep learning
+# Explainable multi-omics deep clustering model reveals an important role of DNA methylation in pancreatic ductal adenocarcinoma
 
 ## Abstract
 
-Pancreatic ductal adenocarcinoma (PDAC) patients face the lowest survival among all cancer patients in Europe. Since Western societies have the highest incidence of pancreatic cancer, it has been projected that PDAC will soon become the second leading cause of cancer-related deaths. The main medical challenges of PDAC are that patients with similar somatic genotypes show a wide range of disease phenotypes, and due to its extreme malignancy, it is difficult to collect large and high-quality datasets that allow systematic analyses of the hidden genotype-phenotype patterns. Artificial Intelligence (AI) is currently transforming the field of healthcare and represents a promising technology to integrate various datasets and optimize evidence-based decision making. However, we cannot interpret directly how and why a decision has been made by most of machine learning models. In this study, we developed a deep clustering model for PDAC patient stratification. We then exploited it in terms of explainability, aiming to unbox how black-box choices are made. We hope this study helps to introduce AI in real clinical applications, where the knowledge to make decisions is crucial.
-
-## Installation
-
-To use this project, follow these steps:
-
-    # clone the repository:
-    git clone https://github.com/interpretability-in-deep-learning.git
-
-    # install the required dependencies. The easiest way is to use conda:
-    conda env update --file environment.yml
-
-## Usage
-
-The paper is the document document.pdf. The notebooks with the results are included in the folder src/. Please, remember the files in the data folder are only a subsample of the real datasets.
+Patients with pancreatic ductal adenocarcinoma (PDAC) have the lowest survival rate among all cancer patients in Europe. Since western societies have the highest incidence of pancreatic cancer, it has been projected that PDAC will soon become the second leading cause of cancer-related deaths. The main challenge of PDAC treatment is that patients with similar somatic genotypes exhibit a wide range of disease phenotypes. Artificial Intelligence (AI) is currently transforming the field of healthcare and represents a promising technology for integrating various datasets and optimizing evidence-based decision making. However, the interpretability of most AI models is limited and it is challenging to understand how and why a decision is made. In this study, we developed a deep clustering model for PDAC patient stratification using integrated methylation and gene expression data. We placed a specific emphasis on model explainability, with the aim to understand the hidden patterns learned by the model. The results showed two subgroups of PDAC patients with different prognoses and biological factors. The multi-omics profile analysis revealed the important role of DNA methylation. We also showed how the model was able to learn underlying patterns using both single modalities and their combinations. We hope that this study will help to promote more explainable AI in real-world clinical applications, where the knowledge of decision factors is crucial. The code of this project is publicly available in GitHub (\url{https://github.com/albertolzs/course_interpretability_deep_learning}).
