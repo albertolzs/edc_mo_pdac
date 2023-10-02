@@ -7,3 +7,6 @@ Patients with pancreatic ductal adenocarcinoma (PDAC) have the lowest survival r
 ![alt text]([http://url/to/img.png](https://github.com/albertolzs/edc_mo_pdac/blob/main/featureimportance_2.png)https://github.com/albertolzs/edc_mo_pdac/blob/main/featureimportance_2.png)
 
 ![alt text]([http://url/to/img.png](https://github.com/albertolzs/edc_mo_pdac/blob/main/featureimportance_2.png)https://github.com/albertolzs/edc_mo_pdac/blob/main/contribution_per_neuron_2.png)
+
+![contribution_per_neuron_2](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/236af151-0288-47e9-8391-6103ff434d6a)
+
