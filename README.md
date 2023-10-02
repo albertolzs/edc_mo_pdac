@@ -1,4 +1,4 @@
-# Explainable multi-omics deep clustering model reveals an important role of DNA methylation in pancreatic ductal adenocarcinoma
+![survival](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/56d1ed24-e9b4-48cb-9e36-9171ee02b6fc)# Explainable multi-omics deep clustering model reveals an important role of DNA methylation in pancreatic ductal adenocarcinoma
 
 ## Abstract
 
@@ -6,12 +6,11 @@ Patients with pancreatic ductal adenocarcinoma (PDAC) have the lowest survival r
 
 ## Results
 
-![survival](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/1bae9118-3b53-4846-aaf3-f1f0c1eeb17b)
-
+![survival](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/35acd9ed-2706-4a32-bd94-3f63476d68f4)
 Kaplan-Meier estimation for the survival function between clusters. For each estimation, the 95% confidence interval is shown. The log-rank test was applied for obtaining the p-value. The coefficient of the Cox’s proportional hazard model returned a hazard ratio of 1.75 (1.24-2.49, 95% confidence interval).
 
-![featureimportance_2](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/dac182d5-1708-4de5-88af-0eb703f14575)
+![featureimportance_2](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/b0ea530b-2c47-485f-b542-91a8da6dd482)
 Top-25 most important feature across feature importance methods and weights estimated in the training data. The order corresponds to the consensus among all the methods. The feature importance is represented as the values of attributions x 10⁻⁴. The weights indicate the average of the weights of the neurons in the first layer for that specific feature.
 
-![contribution_per_neuron_2](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/236af151-0288-47e9-8391-6103ff434d6a)
+![contribution_per_neuron_2](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/52b6f40d-2db4-4238-92bf-c0fd4f5aea9f)
 Stacked bars showing omics relative contribution to neurons in the embedding layer ordered by importance. The contribution was measured using neuron conductance. 8 out of the 50 neurons are activated by only a single modality; 6 by methylation and 2 by RNA-seq data.
