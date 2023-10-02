@@ -1,4 +1,4 @@
-![survival](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/56d1ed24-e9b4-48cb-9e36-9171ee02b6fc)# Explainable multi-omics deep clustering model reveals an important role of DNA methylation in pancreatic ductal adenocarcinoma
+# Explainable multi-omics deep clustering model reveals an important role of DNA methylation in pancreatic ductal adenocarcinoma
 
 ## Abstract
 
@@ -7,6 +7,7 @@ Patients with pancreatic ductal adenocarcinoma (PDAC) have the lowest survival r
 ## Results
 
 ![survival](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/35acd9ed-2706-4a32-bd94-3f63476d68f4)
+
 Kaplan-Meier estimation for the survival function between clusters. For each estimation, the 95% confidence interval is shown. The log-rank test was applied for obtaining the p-value. The coefficient of the Cox’s proportional hazard model returned a hazard ratio of 1.75 (1.24-2.49, 95% confidence interval).
 
 ![featureimportance_2](https://github.com/albertolzs/edc_mo_pdac/assets/140154262/b0ea530b-2c47-485f-b542-91a8da6dd482)
